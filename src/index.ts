@@ -20,9 +20,10 @@ interface Env {
 	COW_APP_CODE: string;
 }
 
-import { createPublicClient, http, parseAbi, createWalletClient } from 'viem';
+import { createPublicClient, http, parseAbi, createWalletClient, encodeAbiParameters, parseAbiParameters } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
+import { keccak256, concat } from 'viem/utils';
 import {
 	SupportedChainId,
 	OrderKind,
@@ -33,6 +34,7 @@ import {
 	SellTokenSource,
 	BuyTokenDestination,
 	OrderQuoteSideKindSell,
+	OrderCreation,
 } from '@cowprotocol/cow-sdk';
 
 // Contract addresses and ABIs
@@ -72,7 +74,7 @@ const TOKEN_SYMBOLS: Record<string, string> = {
 };
 
 // Minimum USD value threshold for claiming rewards (0.5 cents)
-const MIN_USD_VALUE_THRESHOLD = 0.005;
+const MIN_USD_VALUE_THRESHOLD = 0n;
 
 // Define interfaces
 interface Strategy {
@@ -101,6 +103,22 @@ interface TokenPriceResult {
 	rewardsUsdFormatted: string;
 }
 
+// Define the order parameters interface
+interface OrderParams {
+	sellToken: string;
+	buyToken: string;
+	receiver: string;
+	sellAmount: string;
+	buyAmount: string;
+	validTo: number;
+	appData: string;
+	feeAmount: string;
+	kind: OrderKind;
+	partiallyFillable: boolean;
+	sellTokenBalance: SellTokenSource;
+	buyTokenBalance: BuyTokenDestination;
+}
+
 export default {
 	// Fetch handler for HTTP requests - provides basic information about the worker
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -125,6 +143,11 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 	console.log(`🔄 Running with frequency: ${env.CRON_FREQUENCY}`);
 	console.log(`⏰ Scheduled time: ${new Date(controller.scheduledTime).toISOString()}`);
 	console.log('==========================================================');
+
+	// Validate that PRIVATE_KEY is provided
+	if (!env.PRIVATE_KEY) {
+		throw new Error('PRIVATE_KEY environment variable is required');
+	}
 
 	try {
 		// Fetch strategies from the endpoint
@@ -215,27 +238,102 @@ async function calculateTokenPriceInUsd(
 	};
 }
 
+/**
+ * Encode order parameters for EIP-1271 signature
+ * @param params The order parameters
+ * @returns The encoded order parameters
+ */
+function encodeOrderForSignature(params: OrderParams): `0x${string}` {
+	console.log('🔍 Encoding order for signature with parameters:');
+	console.log(`  - sellToken: ${params.sellToken}`);
+	console.log(`  - buyToken: ${params.buyToken}`);
+	console.log(`  - receiver: ${params.receiver}`);
+	console.log(`  - sellAmount: ${params.sellAmount}`);
+	console.log(`  - buyAmount: ${params.buyAmount}`);
+	console.log(`  - validTo: ${params.validTo}`);
+	console.log(`  - appData: ${params.appData}`);
+	console.log(`  - feeAmount: ${params.feeAmount}`);
+	console.log(`  - kind: ${params.kind}`);
+	console.log(`  - partiallyFillable: ${params.partiallyFillable}`);
+	console.log(`  - sellTokenBalance: ${params.sellTokenBalance}`);
+	console.log(`  - buyTokenBalance: ${params.buyTokenBalance}`);
+
+	// Define the types for the order parameters
+	const orderTypes = parseAbiParameters([
+		'address sellToken',
+		'address buyToken',
+		'address receiver',
+		'uint256 sellAmount',
+		'uint256 buyAmount',
+		'uint32 validTo',
+		'bytes32 appData',
+		'uint256 feeAmount',
+		'bytes32 kind',
+		'bool partiallyFillable',
+		'bytes32 sellTokenBalance',
+		'bytes32 buyTokenBalance',
+	]);
+
+	// Define constants for order kinds and balance locations
+	const APP_DATA = '0x0000000000000000000000000000000000000000000000000000000000000000';
+	const ERC20_BALANCE = '0x5a28e9363bb942b639270062aa6bb295f434bcdfc42c97267bf003f272060dc9';
+	const KIND_SELL = '0xf3b277728b3fee749481eb3e0b3b48980dbbab78658fc419025cb16eee346775';
+
+	// Use maximum values for buyAmount and validTo
+	const MAX_UINT256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+	const MAX_UINT32 = 4294967295; // 2^32 - 1
+
+	console.log('🔧 Using constants:');
+	console.log(`  - APP_DATA: ${APP_DATA}`);
+	console.log(`  - ERC20_BALANCE: ${ERC20_BALANCE}`);
+	console.log(`  - KIND_SELL: ${KIND_SELL}`);
+	console.log(`  - MAX_UINT32: ${MAX_UINT32}`);
+	console.log(`  - MAX_UINT256: ${MAX_UINT256.toString()}`);
+
+	// Encode the order parameters
+	const encodedOrder = encodeAbiParameters(orderTypes, [
+		params.sellToken as `0x${string}`,
+		params.buyToken as `0x${string}`,
+		params.receiver as `0x${string}`,
+		BigInt(params.sellAmount),
+		MAX_UINT256,
+		MAX_UINT32,
+		APP_DATA as `0x${string}`,
+		0n,
+		KIND_SELL as `0x${string}`,
+		false,
+		ERC20_BALANCE as `0x${string}`,
+		ERC20_BALANCE as `0x${string}`,
+	]);
+
+	console.log(`📝 Encoded order: ${encodedOrder}`);
+	const orderDigest = keccak256(encodedOrder);
+	console.log(`🔑 Order digest: ${orderDigest}`);
+
+	return orderDigest;
+}
+
 // Create a public client for the Base network
 const baseClient = createPublicClient({
 	chain: base,
 	transport: http(),
 });
 
+// Create a single instance of OrderBookApi for CoW Swap
+const cowSwapOrderBookApi = new OrderBookApi({ chainId: SupportedChainId.BASE });
+
 /**
  * Get a CoW Swap quote for swapping tokens
- * @param privateKey The private key to use for signing the order
+ * @param strategy The strategy address
  * @param sellToken The token to sell (reward token)
  * @param sellAmount The amount to sell
  * @param buyToken The token to buy (e.g., USDC)
- * @param appCode The CoW Protocol app code
  * @returns The quote information
  */
 async function getSwapQuote(strategy: string, sellToken: string, sellAmount: bigint, buyToken: string): Promise<any> {
 	console.log(
 		`    🐮 Getting CoW Swap quote to swap ${sellAmount.toString()} of ${getTokenSymbol(sellToken)} to ${getTokenSymbol(buyToken)}`
 	);
-
-	const orderBookApi = new OrderBookApi({ chainId: SupportedChainId.BASE });
 
 	// We use SELL order kind to sell the exact amount of reward tokens
 	const parameters: OrderQuoteRequest = {
@@ -254,7 +352,7 @@ async function getSwapQuote(strategy: string, sellToken: string, sellAmount: big
 
 	try {
 		// Get a quote instead of posting an order
-		const quoteAndPost = await orderBookApi.getQuote(parameters);
+		const quoteAndPost = await cowSwapOrderBookApi.getQuote(parameters);
 
 		// Log the quote information
 		console.log(`    ✅ CoW Swap quote received`);
@@ -338,20 +436,20 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								account,
 							});
 
-							//	const hash = await walletClient.writeContract({
-							//		address: UNITROLLER as `0x${string}`,
-							//		abi: UNITROLLER_ABI,
-							//		functionName: 'claimReward',
-							//		args: [strategyAddress],
-							//	});
+							//		const hash = await walletClient.writeContract({
+							//			address: UNITROLLER as `0x${string}`,
+							//			abi: UNITROLLER_ABI,
+							//			functionName: 'claimReward',
+							//			args: [strategyAddress],
+							//		});
 
-							//	// Wait for transaction receipt
-							//	const receipt = await baseClient.waitForTransactionReceipt({
-							//		hash,
-							//	});
+							//		// Wait for transaction receipt
+							//		const receipt = await baseClient.waitForTransactionReceipt({
+							//			hash,
+							//		});
 
-							console.log(`    📝 Transaction hash: ${hash}`);
-							console.log(`    📝 Transaction receipt: ${JSON.stringify(receipt.status)}`);
+							//	console.log(`    📝 Transaction hash: ${hash}`);
+							//	console.log(`    📝 Transaction receipt: ${JSON.stringify(receipt.status)}`);
 
 							// After claiming rewards, get the actual token balance and create a CoW Swap quote
 							try {
@@ -384,6 +482,52 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 										const quoteResult = await getSwapQuote(strategyAddress, reward.rewardToken, tokenBalance, USDC);
 
 										console.log(`    🎉 Successfully got CoW Swap quote for the claimed rewards`);
+
+										// Extract order parameters from the quote response
+										const quoteParams = quoteResult.quote;
+
+										// Create an order object with the parameters from the quote
+										console.log(`    🔄 Encoding order using EIP-1271...`);
+
+										// Create order parameters object
+										const orderParams: OrderParams = {
+											sellToken: quoteParams.sellToken,
+											buyToken: quoteParams.buyToken,
+											receiver: quoteParams.receiver || strategyAddress,
+											sellAmount: quoteParams.sellAmount,
+											buyAmount: quoteParams.buyAmount,
+											validTo: quoteParams.validTo,
+											appData: quoteParams.appData,
+											feeAmount: quoteParams.feeAmount,
+											kind: quoteParams.kind,
+											partiallyFillable: quoteParams.partiallyFillable,
+											sellTokenBalance: quoteParams.sellTokenBalance || SellTokenSource.ERC20,
+											buyTokenBalance: quoteParams.buyTokenBalance || BuyTokenDestination.ERC20,
+										};
+
+										// Encode the order parameters for EIP-1271 signature
+										const orderDigest = encodeOrderForSignature(orderParams);
+
+										console.log(`    📝 Encoded order digest: ${orderDigest}`);
+
+										// Create the order creation object
+										const orderCreation: OrderCreation = {
+											...orderParams,
+											signingScheme: SigningScheme.EIP1271,
+											signature: orderDigest, // Use the encoded order digest as the signature
+											from: strategyAddress,
+											quoteId: quoteResult.id,
+										};
+
+										// Send the order to CoW Swap
+										console.log(`    🔄 Sending order to CoW Swap...`);
+										try {
+											const orderUid = await cowSwapOrderBookApi.sendOrder(orderCreation);
+											console.log(`    ✅ Order successfully sent to CoW Swap`);
+											console.log(`    📝 Order UID: ${orderUid}`);
+										} catch (sendOrderError) {
+											console.error(`    ❌ Error sending order to CoW Swap:`, sendOrderError);
+										}
 									} else {
 										console.log(
 											`    ⏳ Token balance value ($${rewardsUsdFormatted}) below threshold ($${MIN_USD_VALUE_THRESHOLD}), skipping CoW Swap quote`
@@ -395,7 +539,19 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 							} catch (cowError) {
 								console.error(`    ❌ Error getting token balance or CoW Swap quote:`, cowError);
 							}
+						} else {
+							console.log(`    ⏳ Rewards value ($${rewardsUsdFormatted}) below threshold ($${MIN_USD_VALUE_THRESHOLD}), skipping claim`);
+							console.log(
+								`    💡 To manually claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
+							);
 						}
+
+						console.log(
+							`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
+								reward.rewardToken
+							)} (≈ $${rewardsUsdFormatted} USD)`
+						);
+						console.log(`    📈 Current ${getTokenSymbol(reward.rewardToken)} price: $${priceUsd} USD`);
 					} catch (priceError) {
 						// If we can't get the price, just show the token amount and don't attempt to claim
 						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
