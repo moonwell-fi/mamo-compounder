@@ -126,11 +126,6 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 	console.log(`⏰ Scheduled time: ${new Date(controller.scheduledTime).toISOString()}`);
 	console.log('==========================================================');
 
-	// Validate that PRIVATE_KEY is provided
-	if (!env.PRIVATE_KEY) {
-		throw new Error('PRIVATE_KEY environment variable is required');
-	}
-
 	try {
 		// Fetch strategies from the endpoint
 		console.log('📡 Fetching strategies from endpoint...');
@@ -343,20 +338,20 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								account,
 							});
 
-							//		const hash = await walletClient.writeContract({
-							//			address: UNITROLLER as `0x${string}`,
-							//			abi: UNITROLLER_ABI,
-							//			functionName: 'claimReward',
-							//			args: [strategyAddress],
-							//		});
+							//	const hash = await walletClient.writeContract({
+							//		address: UNITROLLER as `0x${string}`,
+							//		abi: UNITROLLER_ABI,
+							//		functionName: 'claimReward',
+							//		args: [strategyAddress],
+							//	});
 
-							//		// Wait for registry transaction receipt
-							//		const receipt = await baseClient.waitForTransactionReceipt({
-							//			hash,
-							//		});
+							//	// Wait for transaction receipt
+							//	const receipt = await baseClient.waitForTransactionReceipt({
+							//		hash,
+							//	});
 
-							//console.log(`    📝 Transaction hash: ${hash}`);
-							//console.log(`    📝 Transaction receipt: ${receipt}`);
+							console.log(`    📝 Transaction hash: ${hash}`);
+							console.log(`    📝 Transaction receipt: ${JSON.stringify(receipt.status)}`);
 
 							// After claiming rewards, get the actual token balance and create a CoW Swap quote
 							try {
@@ -373,12 +368,27 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								console.log(`    💰 Actual token balance: ${tokenBalance.toString()} ${getTokenSymbol(reward.rewardToken)}`);
 
 								if (tokenBalance > 0n) {
-									console.log(`    🔄 Creating CoW Swap quote to swap claimed rewards to USDC...`);
+									// Calculate the USD value of the actual token balance
+									const { priceUsd, rewardsUsdFormatted } = await calculateTokenPriceInUsd(client, reward.rewardToken, tokenBalance);
 
-									// Get a CoW Swap quote for the claimed rewards using the actual token balance
-									const quoteResult = await getSwapQuote(strategyAddress, reward.rewardToken, tokenBalance, USDC);
+									// Parse the USD value to check against threshold
+									const tokenBalanceUsdValue = parseFloat(rewardsUsdFormatted);
 
-									console.log(`    🎉 Successfully got CoW Swap quote for the claimed rewards`);
+									console.log(`    💵 Token balance value: $${rewardsUsdFormatted} USD`);
+
+									// Only get a quote if the balance exceeds the threshold
+									if (tokenBalanceUsdValue >= MIN_USD_VALUE_THRESHOLD) {
+										console.log(`    🔄 Creating CoW Swap quote to swap claimed rewards to USDC...`);
+
+										// Get a CoW Swap quote for the claimed rewards using the actual token balance
+										const quoteResult = await getSwapQuote(strategyAddress, reward.rewardToken, tokenBalance, USDC);
+
+										console.log(`    🎉 Successfully got CoW Swap quote for the claimed rewards`);
+									} else {
+										console.log(
+											`    ⏳ Token balance value ($${rewardsUsdFormatted}) below threshold ($${MIN_USD_VALUE_THRESHOLD}), skipping CoW Swap quote`
+										);
+									}
 								} else {
 									console.log(`    ⚠️ No token balance found after claiming rewards, skipping CoW Swap quote`);
 								}
@@ -386,12 +396,6 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								console.error(`    ❌ Error getting token balance or CoW Swap quote:`, cowError);
 							}
 						}
-						console.log(
-							`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
-								reward.rewardToken
-							)} (≈ $${rewardsUsdFormatted} USD)`
-						);
-						console.log(`    📈 Current ${getTokenSymbol(reward.rewardToken)} price: $${priceUsd} USD`);
 					} catch (priceError) {
 						// If we can't get the price, just show the token amount and don't attempt to claim
 						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
