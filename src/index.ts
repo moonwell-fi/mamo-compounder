@@ -29,11 +29,23 @@ const UNITROLLER_ABI = parseAbi(['function claimReward(address holder) public'])
 // WELL token address
 const WELL = '0xA88594D404727625A9437C3f886C7643872296AE';
 
-// Chainlink price feed for WELL/USD
+// Chainlink price feeds
 const CHAINLINK_WELL_USD = '0xc15d9944dAefE2dB03e53bef8DDA25a56832C5fe';
 const CHAINLINK_ABI = parseAbi([
 	'function latestRoundData() external view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
 ]);
+
+// Map of token addresses to their Chainlink price feed addresses
+const TOKEN_PRICE_FEEDS: Record<string, string> = {
+	[WELL.toLowerCase()]: CHAINLINK_WELL_USD,
+	// Add more token price feeds here as needed
+};
+
+// Map of token addresses to their symbols
+const TOKEN_SYMBOLS: Record<string, string> = {
+	[WELL.toLowerCase()]: 'WELL',
+	// Add more token symbols here as needed
+};
 
 // Define interfaces
 interface Strategy {
@@ -55,6 +67,11 @@ interface Rewards {
 	rewardToken: `0x${string}`;
 	supplyRewardsAmount: bigint;
 	borrowRewardsAmount: bigint;
+}
+
+interface TokenPriceResult {
+	priceUsd: string;
+	rewardsUsdFormatted: string;
 }
 
 export default {
@@ -115,9 +132,62 @@ function createClient(rpcUrl: string) {
 }
 
 /**
+ * Get the symbol for a token address
+ * @param tokenAddress The token address
+ * @returns The token symbol or the shortened address if not found
+ */
+function getTokenSymbol(tokenAddress: string): string {
+	const lowerCaseAddress = tokenAddress.toLowerCase();
+	return TOKEN_SYMBOLS[lowerCaseAddress] || tokenAddress.substring(0, 6) + '...' + tokenAddress.substring(38);
+}
+
+/**
+ * Calculate the USD price of a token amount
+ * @param client The viem client
+ * @param tokenAddress The token address
+ * @param amount The token amount (in token's native decimals)
+ * @returns The price in USD and the formatted USD value of the amount
+ */
+async function calculateTokenPriceInUsd(
+	client: ReturnType<typeof createClient>,
+	tokenAddress: string,
+	amount: bigint
+): Promise<TokenPriceResult> {
+	const lowerCaseAddress = tokenAddress.toLowerCase();
+	const priceFeed = TOKEN_PRICE_FEEDS[lowerCaseAddress];
+
+	if (!priceFeed) {
+		throw new Error(`No price feed found for token ${tokenAddress}`);
+	}
+
+	// Get the token price from Chainlink
+	const priceData = await client.readContract({
+		address: priceFeed as `0x${string}`,
+		abi: CHAINLINK_ABI,
+		functionName: 'latestRoundData',
+	});
+
+	// Extract the price (answer) from the response
+	const tokenPriceUsd = priceData[1]; // answer is at index 1
+
+	// Calculate USD value of the amount
+	// Assuming token has 18 decimals, price has 8 decimals
+	const rewardsUsd = (amount * BigInt(tokenPriceUsd)) / BigInt(10n ** 18n);
+
+	// Format USD value with 8 decimal places
+	const rewardsUsdFormatted = (Number(rewardsUsd) / 10 ** 8).toFixed(8);
+	const priceUsd = (Number(tokenPriceUsd) / 10 ** 8).toFixed(8);
+
+	return {
+		priceUsd,
+		rewardsUsdFormatted,
+	};
+}
+
+/**
  * Process the strategies by looping over them and fetching rewards for each strategy
  */
-async function processStrategies(strategies: Strategy[], rpcUrl: string = 'https://mainnet.base.org'): Promise<void> {
+async function processStrategies(strategies: Strategy[], rpcUrl: string): Promise<void> {
 	console.log(`Processing ${strategies.length} strategies...`);
 
 	// Create viem client using the provided RPC URL
@@ -149,45 +219,42 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string = 'https
 			for (let i = 0; i < rewards.length; i++) {
 				const reward = rewards[i];
 
-				// Check if the reward token is WELL and there are rewards to claim
+				// Check if there are rewards to claim
 				const hasRewards = reward.supplyRewardsAmount > 0n;
-				const isWellToken = reward.rewardToken.toLowerCase() === WELL.toLowerCase();
+				const hasTokenPriceFeed = TOKEN_PRICE_FEEDS[reward.rewardToken.toLowerCase()] !== undefined;
 
-				if (isWellToken && hasRewards) {
-					// Get the WELL/USD price from Chainlink
+				if (hasRewards && hasTokenPriceFeed) {
 					try {
-						const priceData = await client.readContract({
-							address: CHAINLINK_WELL_USD,
-							abi: CHAINLINK_ABI,
-							functionName: 'latestRoundData',
-						});
-
-						// Extract the price (answer) from the response
-						const wellPriceUsd = priceData[1]; // answer is at index 1
-
-						// Calculate USD value of supply rewards
-						// WELL has 18 decimals, price has 8 decimals
-						const supplyRewardsWell = reward.supplyRewardsAmount;
-						const supplyRewardsUsd = (supplyRewardsWell * BigInt(wellPriceUsd)) / BigInt(10n ** 18n);
-
-						// Format USD value with 8 decimal places
-						const supplyRewardsUsdFormatted = (Number(supplyRewardsUsd) / 10 ** 8).toFixed(8);
+						// Get the token price and calculate USD value
+						const { priceUsd, rewardsUsdFormatted } = await calculateTokenPriceInUsd(
+							client,
+							reward.rewardToken,
+							reward.supplyRewardsAmount
+						);
 
 						// Log the results
-						console.log(`    🔄 Found WELL rewards for strategy ${strategy.strategy}`);
+						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
 						console.log(
 							`    💡 To claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
 						);
-						console.log(`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} WELL (≈ $${supplyRewardsUsdFormatted} USD)`);
-						console.log(`    📈 Current WELL price: $${(Number(wellPriceUsd) / 10 ** 8).toFixed(8)} USD`);
+						console.log(
+							`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
+								reward.rewardToken
+							)} (≈ $${rewardsUsdFormatted} USD)`
+						);
+						console.log(`    📈 Current ${getTokenSymbol(reward.rewardToken)} price: $${priceUsd} USD`);
 					} catch (priceError) {
-						// If we can't get the price, just show the WELL amount
-						console.log(`    🔄 Found WELL rewards for strategy ${strategy.strategy}`);
+						// If we can't get the price, just show the token amount
+						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
 						console.log(
 							`    💡 To claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
 						);
-						console.log(`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} WELL (USD value unavailable)`);
-						console.error(`    ❌ Error fetching WELL price:`, priceError);
+						console.log(
+							`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
+								reward.rewardToken
+							)} (USD value unavailable)`
+						);
+						console.error(`    ❌ Error fetching ${getTokenSymbol(reward.rewardToken)} price:`, priceError);
 					}
 				}
 			}
