@@ -12,7 +12,15 @@
 
 /// <reference types="@cloudflare/workers-types" />
 
-import { createPublicClient, http, parseAbi } from 'viem';
+// Define the environment variables interface
+interface Env {
+	CRON_FREQUENCY: string;
+	BASE_RPC_URL: string;
+	PRIVATE_KEY: string;
+}
+
+import { createPublicClient, http, parseAbi, createWalletClient } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 
 // Contract addresses and ABIs
@@ -46,6 +54,9 @@ const TOKEN_SYMBOLS: Record<string, string> = {
 	[WELL.toLowerCase()]: 'WELL',
 	// Add more token symbols here as needed
 };
+
+// Minimum USD value threshold for claiming rewards (0.5 cents)
+const MIN_USD_VALUE_THRESHOLD = 0.005;
 
 // Define interfaces
 interface Strategy {
@@ -99,6 +110,11 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 	console.log(`⏰ Scheduled time: ${new Date(controller.scheduledTime).toISOString()}`);
 	console.log('==========================================================');
 
+	// Validate that PRIVATE_KEY is provided
+	if (!env.PRIVATE_KEY) {
+		throw new Error('PRIVATE_KEY environment variable is required');
+	}
+
 	try {
 		// Fetch strategies from the endpoint
 		console.log('📡 Fetching strategies from endpoint...');
@@ -111,8 +127,8 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 		const strategiesResponse: StrategiesResponse = await response.json();
 		console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
 
-		// Process the strategies with the BASE_RPC_URL from environment variables
-		await processStrategies(strategiesResponse.strategies, env.BASE_RPC_URL);
+		// Process the strategies with the BASE_RPC_URL and PRIVATE_KEY from environment variables
+		await processStrategies(strategiesResponse.strategies, env.BASE_RPC_URL, env.PRIVATE_KEY);
 
 		console.log('==========================================================');
 		console.log('✅ SCHEDULED JOB COMPLETED SUCCESSFULLY ✅');
@@ -123,7 +139,11 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 	}
 }
 
-// Create a viem public client
+/**
+ * Create a viem public client
+ * @param rpcUrl The RPC URL to connect to
+ * @returns The public client
+ */
 function createClient(rpcUrl: string) {
 	return createPublicClient({
 		chain: base,
@@ -143,13 +163,13 @@ function getTokenSymbol(tokenAddress: string): string {
 
 /**
  * Calculate the USD price of a token amount
- * @param client The viem client
+ * @param client The viem public client
  * @param tokenAddress The token address
  * @param amount The token amount (in token's native decimals)
  * @returns The price in USD and the formatted USD value of the amount
  */
 async function calculateTokenPriceInUsd(
-	client: ReturnType<typeof createClient>,
+	client: ReturnType<typeof createPublicClient>,
 	tokenAddress: string,
 	amount: bigint
 ): Promise<TokenPriceResult> {
@@ -187,11 +207,14 @@ async function calculateTokenPriceInUsd(
 /**
  * Process the strategies by looping over them and fetching rewards for each strategy
  */
-async function processStrategies(strategies: Strategy[], rpcUrl: string): Promise<void> {
+async function processStrategies(strategies: Strategy[], rpcUrl: string, privateKey: string): Promise<void> {
 	console.log(`Processing ${strategies.length} strategies...`);
 
 	// Create viem client using the provided RPC URL
 	const client = createClient(rpcUrl);
+
+	// Private key is now mandatory
+	console.log(`  ✅ Private key provided for claiming rewards`);
 
 	for (const strategy of strategies) {
 		console.log(`Processing strategy: ${strategy.strategy}`);
@@ -232,11 +255,41 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string): Promis
 							reward.supplyRewardsAmount
 						);
 
+						// Parse the USD value to check against threshold
+						const rewardsUsdValue = parseFloat(rewardsUsdFormatted);
+						const exceedsThreshold = rewardsUsdValue >= MIN_USD_VALUE_THRESHOLD;
+
 						// Log the results
 						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
-						console.log(
-							`    💡 To claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
-						);
+
+						if (exceedsThreshold) {
+							console.log(`    🚀 Rewards value ($${rewardsUsdFormatted}) exceeds threshold ($${MIN_USD_VALUE_THRESHOLD})`);
+
+							console.log(`    ✅ Calling claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`);
+
+							// Implement the wallet client to call the unitroller
+							const account = privateKeyToAccount(privateKey as `0x${string}`);
+							const walletClient = createWalletClient({
+								chain: base,
+								transport: http(rpcUrl),
+								account,
+							});
+
+							const hash = await walletClient.writeContract({
+								address: UNITROLLER as `0x${string}`,
+								abi: UNITROLLER_ABI,
+								functionName: 'claimReward',
+								args: [strategyAddress],
+							});
+
+							console.log(`    📝 Transaction hash: ${hash}`);
+						} else {
+							console.log(`    ⏳ Rewards value ($${rewardsUsdFormatted}) below threshold ($${MIN_USD_VALUE_THRESHOLD}), skipping claim`);
+							console.log(
+								`    💡 To manually claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
+							);
+						}
+
 						console.log(
 							`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
 								reward.rewardToken
@@ -244,10 +297,11 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string): Promis
 						);
 						console.log(`    📈 Current ${getTokenSymbol(reward.rewardToken)} price: $${priceUsd} USD`);
 					} catch (priceError) {
-						// If we can't get the price, just show the token amount
+						// If we can't get the price, just show the token amount and don't attempt to claim
 						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
+						console.log(`    ⚠️ Unable to determine USD value, skipping automatic claim`);
 						console.log(
-							`    💡 To claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
+							`    💡 To manually claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
 						);
 						console.log(
 							`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
