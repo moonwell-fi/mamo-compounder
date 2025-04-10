@@ -2,6 +2,8 @@
  * Mamo Compounder Worker
  *
  * This worker fetches strategies from the /strategies endpoint and processes them.
+ * It calls the getUserRewards function for each strategy to get their rewards from the Moonwell View contract.
+ * When WELL token rewards are found, it logs information about how to claim them using the UNITROLLER contract.
  * It runs on a cron schedule defined by the CRON_FREQUENCY environment variable.
  *
  * - Run `npm run dev --test-scheduled` in your terminal to start a development server and test the scheduled job
@@ -10,6 +12,30 @@
 
 /// <reference types="@cloudflare/workers-types" />
 
+import { createPublicClient, http, parseAbi } from 'viem';
+import { base } from 'viem/chains';
+
+// Contract addresses and ABIs
+const MOONWELL_VIEW_CONTRACT = '0x6834770ABA6c2028f448E3259DDEE4BCB879d459';
+const REWARDS_ABI = parseAbi([
+	'struct Rewards { address market; address rewardToken; uint256 supplyRewardsAmount; uint256 borrowRewardsAmount; }',
+	'function getUserRewards(address user) external view returns (Rewards[] memory)',
+]);
+
+// Unitroller contract for claiming rewards
+const UNITROLLER = '0xfBb21d0380beE3312B33c4353c8936a0F13EF26C';
+const UNITROLLER_ABI = parseAbi(['function claimReward(address holder) public']);
+
+// WELL token address
+const WELL = '0xA88594D404727625A9437C3f886C7643872296AE';
+
+// Chainlink price feed for WELL/USD
+const CHAINLINK_WELL_USD = '0xc15d9944dAefE2dB03e53bef8DDA25a56832C5fe';
+const CHAINLINK_ABI = parseAbi([
+	'function latestRoundData() external view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
+]);
+
+// Define interfaces
 interface Strategy {
 	logIndex: number;
 	blockNumber: string;
@@ -22,6 +48,13 @@ interface Strategy {
 interface StrategiesResponse {
 	strategies: Strategy[];
 	nextCursor: string | null;
+}
+
+interface Rewards {
+	market: `0x${string}`;
+	rewardToken: `0x${string}`;
+	supplyRewardsAmount: bigint;
+	borrowRewardsAmount: bigint;
 }
 
 export default {
@@ -42,11 +75,16 @@ export default {
  * Process the scheduled job
  */
 async function processScheduledJob(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-	console.log(`Running scheduled job with frequency: ${env.CRON_FREQUENCY}`);
-	console.log(`Scheduled time: ${new Date(controller.scheduledTime).toISOString()}`);
+	// Add prominent logging with clear markers
+	console.log('==========================================================');
+	console.log('🕒 SCHEDULED JOB STARTED 🕒');
+	console.log(`🔄 Running with frequency: ${env.CRON_FREQUENCY}`);
+	console.log(`⏰ Scheduled time: ${new Date(controller.scheduledTime).toISOString()}`);
+	console.log('==========================================================');
 
 	try {
 		// Fetch strategies from the endpoint
+		console.log('📡 Fetching strategies from endpoint...');
 		const response = await fetch('http://localhost:8787/strategies');
 
 		if (!response.ok) {
@@ -54,32 +92,109 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 		}
 
 		const strategiesResponse: StrategiesResponse = await response.json();
+		console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
 
-		// Process the strategies
-		await processStrategies(strategiesResponse.strategies);
+		// Process the strategies with the BASE_RPC_URL from environment variables
+		await processStrategies(strategiesResponse.strategies, env.BASE_RPC_URL);
 
-		console.log('Scheduled job completed successfully');
+		console.log('==========================================================');
+		console.log('✅ SCHEDULED JOB COMPLETED SUCCESSFULLY ✅');
+		console.log('==========================================================');
 	} catch (error: any) {
-		console.error('Error in scheduled job:', error);
+		console.error('❌ ERROR IN SCHEDULED JOB:', error);
+		console.error('==========================================================');
 	}
 }
 
+// Create a viem public client
+function createClient(rpcUrl: string) {
+	return createPublicClient({
+		chain: base,
+		transport: http(rpcUrl),
+	});
+}
+
 /**
- * Process the strategies by looping over them
+ * Process the strategies by looping over them and fetching rewards for each strategy
  */
-async function processStrategies(strategies: Strategy[]): Promise<void> {
+async function processStrategies(strategies: Strategy[], rpcUrl: string = 'https://mainnet.base.org'): Promise<void> {
 	console.log(`Processing ${strategies.length} strategies...`);
-	
+
+	// Create viem client using the provided RPC URL
+	const client = createClient(rpcUrl);
+
 	for (const strategy of strategies) {
 		console.log(`Processing strategy: ${strategy.strategy}`);
 		console.log(`  User: ${strategy.user}`);
 		console.log(`  Implementation: ${strategy.implementation}`);
-		console.log(`  Block Number: ${strategy.blockNumber}`);
-		console.log(`  Transaction Hash: ${strategy.txHash}`);
-		
-		// Here you can add more logic to process each strategy
-		// For example, making additional API calls, storing data, etc.
+
+		try {
+			// Call the getUserRewards function for this strategy
+			console.log(`  Fetching rewards for strategy: ${strategy.strategy}...`);
+
+			// Convert the strategy address to a proper 0x-prefixed address
+			const strategyAddress = strategy.strategy as `0x${string}`;
+
+			// Call the contract
+			const rewards = (await client.readContract({
+				address: MOONWELL_VIEW_CONTRACT,
+				abi: REWARDS_ABI,
+				functionName: 'getUserRewards',
+				args: [strategyAddress],
+			})) as Rewards[];
+
+			console.log(`  Found ${rewards.length} rewards for strategy ${strategy.strategy}`);
+
+			// Process each reward
+			for (let i = 0; i < rewards.length; i++) {
+				const reward = rewards[i];
+
+				// Check if the reward token is WELL and there are rewards to claim
+				const hasRewards = reward.supplyRewardsAmount > 0n;
+				const isWellToken = reward.rewardToken.toLowerCase() === WELL.toLowerCase();
+
+				if (isWellToken && hasRewards) {
+					// Get the WELL/USD price from Chainlink
+					try {
+						const priceData = await client.readContract({
+							address: CHAINLINK_WELL_USD,
+							abi: CHAINLINK_ABI,
+							functionName: 'latestRoundData',
+						});
+
+						// Extract the price (answer) from the response
+						const wellPriceUsd = priceData[1]; // answer is at index 1
+
+						// Calculate USD value of supply rewards
+						// WELL has 18 decimals, price has 8 decimals
+						const supplyRewardsWell = reward.supplyRewardsAmount;
+						const supplyRewardsUsd = (supplyRewardsWell * BigInt(wellPriceUsd)) / BigInt(10n ** 18n);
+
+						// Format USD value with 8 decimal places
+						const supplyRewardsUsdFormatted = (Number(supplyRewardsUsd) / 10 ** 8).toFixed(8);
+
+						// Log the results
+						console.log(`    🔄 Found WELL rewards for strategy ${strategy.strategy}`);
+						console.log(
+							`    💡 To claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
+						);
+						console.log(`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} WELL (≈ $${supplyRewardsUsdFormatted} USD)`);
+						console.log(`    📈 Current WELL price: $${(Number(wellPriceUsd) / 10 ** 8).toFixed(8)} USD`);
+					} catch (priceError) {
+						// If we can't get the price, just show the WELL amount
+						console.log(`    🔄 Found WELL rewards for strategy ${strategy.strategy}`);
+						console.log(
+							`    💡 To claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
+						);
+						console.log(`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} WELL (USD value unavailable)`);
+						console.error(`    ❌ Error fetching WELL price:`, priceError);
+					}
+				}
+			}
+		} catch (error) {
+			console.error(`  Error fetching rewards for strategy ${strategy.strategy}:`, error);
+		}
 	}
-	
+
 	console.log('Finished processing strategies');
 }
