@@ -17,11 +17,23 @@ interface Env {
 	CRON_FREQUENCY: string;
 	BASE_RPC_URL: string;
 	PRIVATE_KEY: string;
+	COW_APP_CODE: string;
 }
 
 import { createPublicClient, http, parseAbi, createWalletClient } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
+import {
+	SupportedChainId,
+	OrderKind,
+	SigningScheme,
+	OrderBookApi,
+	OrderQuoteRequest,
+	PriceQuality,
+	SellTokenSource,
+	BuyTokenDestination,
+	OrderQuoteSideKindSell,
+} from '@cowprotocol/cow-sdk';
 
 // Contract addresses and ABIs
 const MOONWELL_VIEW_CONTRACT = '0x6834770ABA6c2028f448E3259DDEE4BCB879d459';
@@ -34,8 +46,12 @@ const REWARDS_ABI = parseAbi([
 const UNITROLLER = '0xfBb21d0380beE3312B33c4353c8936a0F13EF26C';
 const UNITROLLER_ABI = parseAbi(['function claimReward(address holder) public']);
 
+// ERC20 ABI for token balance
+const ERC20_ABI = parseAbi(['function balanceOf(address owner) view returns (uint256)']);
+
 // WELL token address
 const WELL = '0xA88594D404727625A9437C3f886C7643872296AE';
+const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 
 // Chainlink price feeds
 const CHAINLINK_WELL_USD = '0xc15d9944dAefE2dB03e53bef8DDA25a56832C5fe';
@@ -127,8 +143,8 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 		const strategiesResponse: StrategiesResponse = await response.json();
 		console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
 
-		// Process the strategies with the BASE_RPC_URL and PRIVATE_KEY from environment variables
-		await processStrategies(strategiesResponse.strategies, env.BASE_RPC_URL, env.PRIVATE_KEY);
+		// Process the strategies with all environment variables
+		await processStrategies(strategiesResponse.strategies, env.BASE_RPC_URL, env.PRIVATE_KEY, env.COW_APP_CODE);
 
 		console.log('==========================================================');
 		console.log('✅ SCHEDULED JOB COMPLETED SUCCESSFULLY ✅');
@@ -204,10 +220,62 @@ async function calculateTokenPriceInUsd(
 	};
 }
 
+// Create a public client for the Base network
+const baseClient = createPublicClient({
+	chain: base,
+	transport: http(),
+});
+
+/**
+ * Get a CoW Swap quote for swapping tokens
+ * @param privateKey The private key to use for signing the order
+ * @param sellToken The token to sell (reward token)
+ * @param sellAmount The amount to sell
+ * @param buyToken The token to buy (e.g., USDC)
+ * @param appCode The CoW Protocol app code
+ * @returns The quote information
+ */
+async function getSwapQuote(strategy: string, sellToken: string, sellAmount: bigint, buyToken: string): Promise<any> {
+	console.log(
+		`    🐮 Getting CoW Swap quote to swap ${sellAmount.toString()} of ${getTokenSymbol(sellToken)} to ${getTokenSymbol(buyToken)}`
+	);
+
+	const orderBookApi = new OrderBookApi({ chainId: SupportedChainId.BASE });
+
+	// We use SELL order kind to sell the exact amount of reward tokens
+	const parameters: OrderQuoteRequest = {
+		sellToken: sellToken,
+		buyToken: buyToken,
+		from: strategy,
+		receiver: strategy,
+		signingScheme: SigningScheme.EIP1271,
+		priceQuality: PriceQuality.OPTIMAL,
+		onchainOrder: true,
+		sellTokenBalance: SellTokenSource.ERC20,
+		buyTokenBalance: BuyTokenDestination.ERC20,
+		sellAmountBeforeFee: sellAmount.toString(),
+		kind: OrderQuoteSideKindSell.SELL,
+	};
+
+	try {
+		// Get a quote instead of posting an order
+		const quoteAndPost = await orderBookApi.getQuote(parameters);
+
+		// Log the quote information
+		console.log(`    ✅ CoW Swap quote received`);
+		console.log(`      - Quote details: ${JSON.stringify(quoteAndPost, null, 2)}`);
+
+		return quoteAndPost;
+	} catch (error) {
+		console.error(`    ❌ Error getting CoW Swap quote:`, error);
+		throw error;
+	}
+}
+
 /**
  * Process the strategies by looping over them and fetching rewards for each strategy
  */
-async function processStrategies(strategies: Strategy[], rpcUrl: string, privateKey: string): Promise<void> {
+async function processStrategies(strategies: Strategy[], rpcUrl: string, privateKey: string, cowAppCode?: string): Promise<void> {
 	console.log(`Processing ${strategies.length} strategies...`);
 
 	// Create viem client using the provided RPC URL
@@ -275,21 +343,49 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								account,
 							});
 
-							const hash = await walletClient.writeContract({
-								address: UNITROLLER as `0x${string}`,
-								abi: UNITROLLER_ABI,
-								functionName: 'claimReward',
-								args: [strategyAddress],
-							});
+							//		const hash = await walletClient.writeContract({
+							//			address: UNITROLLER as `0x${string}`,
+							//			abi: UNITROLLER_ABI,
+							//			functionName: 'claimReward',
+							//			args: [strategyAddress],
+							//		});
 
-							console.log(`    📝 Transaction hash: ${hash}`);
-						} else {
-							console.log(`    ⏳ Rewards value ($${rewardsUsdFormatted}) below threshold ($${MIN_USD_VALUE_THRESHOLD}), skipping claim`);
-							console.log(
-								`    💡 To manually claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
-							);
+							//		// Wait for registry transaction receipt
+							//		const receipt = await baseClient.waitForTransactionReceipt({
+							//			hash,
+							//		});
+
+							//console.log(`    📝 Transaction hash: ${hash}`);
+							//console.log(`    📝 Transaction receipt: ${receipt}`);
+
+							// After claiming rewards, get the actual token balance and create a CoW Swap quote
+							try {
+								console.log(`    🔄 Getting actual token balance after claiming rewards...`);
+
+								// Get the actual token balance of the strategy
+								const tokenBalance = await client.readContract({
+									address: reward.rewardToken,
+									abi: ERC20_ABI,
+									functionName: 'balanceOf',
+									args: [strategyAddress],
+								});
+
+								console.log(`    💰 Actual token balance: ${tokenBalance.toString()} ${getTokenSymbol(reward.rewardToken)}`);
+
+								if (tokenBalance > 0n) {
+									console.log(`    🔄 Creating CoW Swap quote to swap claimed rewards to USDC...`);
+
+									// Get a CoW Swap quote for the claimed rewards using the actual token balance
+									const quoteResult = await getSwapQuote(strategyAddress, reward.rewardToken, tokenBalance, USDC);
+
+									console.log(`    🎉 Successfully got CoW Swap quote for the claimed rewards`);
+								} else {
+									console.log(`    ⚠️ No token balance found after claiming rewards, skipping CoW Swap quote`);
+								}
+							} catch (cowError) {
+								console.error(`    ❌ Error getting token balance or CoW Swap quote:`, cowError);
+							}
 						}
-
 						console.log(
 							`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
 								reward.rewardToken

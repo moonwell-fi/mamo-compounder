@@ -3,8 +3,8 @@
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
+		"dev": "wrangler dev --test-scheduled --port 5656",
 		"deploy": "wrangler deploy",
-		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"test": "vitest",
 		"cf-typegen": "wrangler types"
@@ -17,6 +17,7 @@
 		"wrangler": "^4.9.1"
 	},
 	"dependencies": {
+		"@cowprotocol/cow-sdk": "^5.10.2",
 		"viem": "^2.26.2"
 	}
 }
