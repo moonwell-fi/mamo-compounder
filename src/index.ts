@@ -182,7 +182,7 @@ function createClient(rpcUrl: string) {
 	return createPublicClient({
 		chain: base,
 		transport: http(rpcUrl),
-	});
+	}) as any; // Type assertion to avoid compatibility issues
 }
 
 /**
@@ -238,12 +238,44 @@ async function calculateTokenPriceInUsd(
 	};
 }
 
+// Constants for CoW Swap orders
+// Domain separator for CoW Swap on Base network
+const DOMAIN_SEPARATOR = '0xc078f884a2676e1345748b1feace7b0abee5d00ecadb6e574dcdd109a63e8943';
+
+// GPv2Order TYPE_HASH for EIP-712 hash calculation
+const TYPE_HASH = '0xd5a25ba2e97094ad7d83dc28a6572da797d6b3e7fc6663bd93efb789fc17e489';
+
+// App data (always zero)
+const APP_DATA = '0x0000000000000000000000000000000000000000000000000000000000000000';
+
+// ERC20 balance identifier
+const ERC20_BALANCE = '0x5a28e9363bb942b639270062aa6bb295f434bcdfc42c97267bf003f272060dc9';
+
+// KIND_SELL identifier
+const KIND_SELL = '0xf3b277728b3fee749481eb3e0b3b48980dbbab78658fc419025cb16eee346775';
+
+// Magic value that should be returned by isValidSignature
+const MAGIC_VALUE = '0x1626ba7e';
+
+// ABI for the strategy contract functions
+const STRATEGY_ABI = parseAbi([
+	'function isValidSignature(bytes32 orderDigest, bytes calldata encodedOrder) external view returns (bytes4)',
+	'function hash(bytes32 domainSeparator) external pure returns (bytes32)',
+	'function allowedSlippageInBps() external view returns (uint256)',
+]);
+
 /**
- * Encode order parameters for EIP-1271 signature
+ * Encode order parameters for EIP-1271 signature and call isValidSignature
  * @param params The order parameters
- * @returns The encoded order parameters
+ * @param strategyAddress The address of the strategy contract
+ * @param client The viem public client
+ * @returns The encoded order parameters and validation result
  */
-function encodeOrderForSignature(params: OrderParams): `0x${string}` {
+async function encodeOrderForSignature(
+	params: OrderParams,
+	strategyAddress: `0x${string}`,
+	client: ReturnType<typeof createPublicClient>
+): Promise<{ orderDigest: `0x${string}`; encodedOrder: `0x${string}`; isValid: boolean }> {
 	console.log('🔍 Encoding order for signature with parameters:');
 	console.log(`  - sellToken: ${params.sellToken}`);
 	console.log(`  - buyToken: ${params.buyToken}`);
@@ -258,66 +290,167 @@ function encodeOrderForSignature(params: OrderParams): `0x${string}` {
 	console.log(`  - sellTokenBalance: ${params.sellTokenBalance}`);
 	console.log(`  - buyTokenBalance: ${params.buyTokenBalance}`);
 
-	// Define the types for the order parameters
-	const orderTypes = parseAbiParameters([
-		'address sellToken',
-		'address buyToken',
-		'address receiver',
-		'uint256 sellAmount',
-		'uint256 buyAmount',
-		'uint32 validTo',
-		'bytes32 appData',
-		'uint256 feeAmount',
-		'bytes32 kind',
-		'bool partiallyFillable',
-		'bytes32 sellTokenBalance',
-		'bytes32 buyTokenBalance',
-	]);
-
-	// Define constants for order kinds and balance locations
-	const APP_DATA = '0x0000000000000000000000000000000000000000000000000000000000000000';
-	const ERC20_BALANCE = '0x5a28e9363bb942b639270062aa6bb295f434bcdfc42c97267bf003f272060dc9';
-	const KIND_SELL = '0xf3b277728b3fee749481eb3e0b3b48980dbbab78658fc419025cb16eee346775';
-
-	// Use maximum values for buyAmount and validTo
-	const MAX_UINT256 = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
-	const MAX_UINT32 = 4294967295; // 2^32 - 1
-
 	console.log('🔧 Using constants:');
 	console.log(`  - APP_DATA: ${APP_DATA}`);
 	console.log(`  - ERC20_BALANCE: ${ERC20_BALANCE}`);
 	console.log(`  - KIND_SELL: ${KIND_SELL}`);
-	console.log(`  - MAX_UINT32: ${MAX_UINT32}`);
-	console.log(`  - MAX_UINT256: ${MAX_UINT256.toString()}`);
+	console.log(`  - DOMAIN_SEPARATOR: ${DOMAIN_SEPARATOR}`);
 
-	// Encode the order parameters
-	const encodedOrder = encodeAbiParameters(orderTypes, [
-		params.sellToken as `0x${string}`,
-		params.buyToken as `0x${string}`,
-		params.receiver as `0x${string}`,
-		BigInt(params.sellAmount),
-		MAX_UINT256,
-		MAX_UINT32,
-		APP_DATA as `0x${string}`,
-		0n,
-		KIND_SELL as `0x${string}`,
-		false,
-		ERC20_BALANCE as `0x${string}`,
-		ERC20_BALANCE as `0x${string}`,
-	]);
+	// Get the allowed slippage from the strategy contract
+	console.log(`🔍 Getting allowed slippage from strategy contract ${strategyAddress}...`);
+	let allowedSlippageInBps = 30n; // Default to 0.3% if we can't get it from the contract
+	try {
+		allowedSlippageInBps = await client.readContract({
+			address: strategyAddress,
+			abi: STRATEGY_ABI,
+			functionName: 'allowedSlippageInBps',
+		});
+		console.log(`✅ Allowed slippage: ${allowedSlippageInBps} bps`);
+	} catch (error) {
+		console.error(`❌ Error getting allowed slippage from contract:`, error);
+		console.log(`⚠️ Using default slippage of ${allowedSlippageInBps} bps`);
+	}
 
-	console.log(`📝 Encoded order: ${encodedOrder}`);
-	const orderDigest = keccak256(encodedOrder);
-	console.log(`🔑 Order digest: ${orderDigest}`);
+	// Create the order struct that matches the contract's expectations
+	// Use a shorter expiration time to avoid "Order expires too far in the future" error
+	const order = {
+		sellToken: params.sellToken as `0x${string}`,
+		buyToken: params.buyToken as `0x${string}`,
+		receiver: params.receiver as `0x${string}`,
+		sellAmount: BigInt(params.sellAmount),
+		buyAmount: BigInt(params.buyAmount),
+		validTo: params.validTo,
+		appData: params.appData as `0x${string}`,
+		feeAmount: BigInt(0),
+		kind: KIND_SELL as `0x${string}`,
+		partiallyFillable: false, // partially_fillable = false in Rust
+		sellTokenBalance: ERC20_BALANCE as `0x${string}`,
+		buyTokenBalance: ERC20_BALANCE as `0x${string}`,
+	};
 
-	return orderDigest;
+	// First, hash the order struct using the TYPE_HASH
+	// This is an attempt to replicate the assembly code in the contract
+	// The contract uses assembly to compute the hash by first storing the TYPE_HASH at the start of the data,
+	// then hashing 416 bytes (which is (1 + 12) * 32 bytes, where 12 is the number of fields in the order struct)
+	const encodedOrderData = encodeAbiParameters(
+		[
+			{ name: 'sellToken', type: 'address' },
+			{ name: 'buyToken', type: 'address' },
+			{ name: 'receiver', type: 'address' },
+			{ name: 'sellAmount', type: 'uint256' },
+			{ name: 'buyAmount', type: 'uint256' },
+			{ name: 'validTo', type: 'uint32' },
+			{ name: 'appData', type: 'bytes32' },
+			{ name: 'feeAmount', type: 'uint256' },
+			{ name: 'kind', type: 'bytes32' },
+			{ name: 'partiallyFillable', type: 'bool' },
+			{ name: 'sellTokenBalance', type: 'bytes32' },
+			{ name: 'buyTokenBalance', type: 'bytes32' },
+		],
+		[
+			order.sellToken,
+			order.buyToken,
+			order.receiver,
+			order.sellAmount,
+			order.buyAmount,
+			order.validTo,
+			order.appData,
+			order.feeAmount,
+			order.kind,
+			order.partiallyFillable,
+			order.sellTokenBalance,
+			order.buyTokenBalance,
+		]
+	);
+
+	// Calculate the struct hash using the TYPE_HASH
+	const orderStructHash = keccak256(
+		concat([
+			TYPE_HASH as `0x${string}`,
+			encodedOrderData.slice(2) as `0x${string}`, // Remove the '0x' prefix
+		])
+	);
+
+	console.log(`📝 Order struct hash: ${orderStructHash}`);
+
+	// Then, create the EIP-712 digest using the domain separator
+	const orderDigest = keccak256(
+		concat([
+			'0x1901', // EIP-712 prefix
+			DOMAIN_SEPARATOR as `0x${string}`,
+			orderStructHash,
+		])
+	);
+
+	console.log(`🔑 Order digest with domain separator: ${orderDigest}`);
+
+	// Encode the order data for the isValidSignature call
+	// According to GPv2Order.Data struct:
+	// struct Data {
+	//     IERC20 sellToken;
+	//     IERC20 buyToken;
+	//     address receiver;
+	//     uint256 sellAmount;
+	//     uint256 buyAmount;
+	//     uint32 validTo;
+	//     bytes32 appData;
+	//     uint256 feeAmount;
+	//     bytes32 kind;
+	//     bool partiallyFillable;
+	//     bytes32 sellTokenBalance;
+	//     bytes32 buyTokenBalance;
+	// }
+	const encodedOrder = encodeAbiParameters(
+		[
+			{
+				type: 'tuple',
+				components: [
+					{ name: 'sellToken', type: 'address' },
+					{ name: 'buyToken', type: 'address' },
+					{ name: 'receiver', type: 'address' },
+					{ name: 'sellAmount', type: 'uint256' },
+					{ name: 'buyAmount', type: 'uint256' },
+					{ name: 'validTo', type: 'uint32' },
+					{ name: 'appData', type: 'bytes32' },
+					{ name: 'feeAmount', type: 'uint256' },
+					{ name: 'kind', type: 'bytes32' },
+					{ name: 'partiallyFillable', type: 'bool' },
+					{ name: 'sellTokenBalance', type: 'bytes32' },
+					{ name: 'buyTokenBalance', type: 'bytes32' },
+				],
+			},
+		],
+		[order]
+	);
+
+	console.log(`📦 Encoded order data: ${encodedOrder}`);
+
+	// Call isValidSignature on the strategy contract
+	console.log(`🔐 Calling isValidSignature on strategy contract ${strategyAddress}...`);
+	try {
+		const result = await client.readContract({
+			address: strategyAddress,
+			abi: STRATEGY_ABI,
+			functionName: 'isValidSignature',
+			args: [orderDigest, encodedOrder],
+		});
+
+		console.log(`✅ isValidSignature result: ${result}`);
+		const isValid = result === MAGIC_VALUE;
+		console.log(`${isValid ? '✅ Signature is valid!' : '❌ Signature is invalid!'}`);
+
+		return { orderDigest, encodedOrder, isValid };
+	} catch (error) {
+		console.error(`❌ Error calling isValidSignature:`, error);
+		return { orderDigest, encodedOrder, isValid: false };
+	}
 }
 
 // Create a public client for the Base network
 const baseClient = createPublicClient({
 	chain: base,
 	transport: http(),
-});
+}) as any; // Type assertion to avoid compatibility issues
 
 // Create a single instance of OrderBookApi for CoW Swap
 const cowSwapOrderBookApi = new OrderBookApi({ chainId: SupportedChainId.BASE });
@@ -434,7 +567,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								chain: base,
 								transport: http(rpcUrl),
 								account,
-							});
+							}) as any; // Type assertion to avoid compatibility issues
 
 							//		const hash = await walletClient.writeContract({
 							//			address: UNITROLLER as `0x${string}`,
@@ -489,32 +622,64 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 										// Create an order object with the parameters from the quote
 										console.log(`    🔄 Encoding order using EIP-1271...`);
 
-										// Create order parameters object
+										// Get the allowed slippage from the strategy contract
+										console.log(`🔍 Getting allowed slippage from strategy contract ${strategyAddress}...`);
+										let allowedSlippageInBps = 30n; // Default to 0.3% if we can't get it from the contract
+										try {
+											allowedSlippageInBps = await client.readContract({
+												address: strategyAddress,
+												abi: STRATEGY_ABI,
+												functionName: 'allowedSlippageInBps',
+											});
+											console.log(`✅ Allowed slippage: ${allowedSlippageInBps} bps`);
+										} catch (error) {
+											console.error(`❌ Error getting allowed slippage from contract:`, error);
+											console.log(`⚠️ Using default slippage of ${allowedSlippageInBps} bps`);
+										}
+
+										// Calculate the buy amount after slippage
+										const buyAmountAfterSlippage = (BigInt(quoteParams.buyAmount) * (10000n - allowedSlippageInBps)) / 10000n;
+										console.log(`📊 Buy amount after slippage: ${buyAmountAfterSlippage.toString()}`);
+
+										// Create the order struct that matches the contract's expectations
+										// Use a shorter expiration time to avoid "Order expires too far in the future" error
 										const orderParams: OrderParams = {
 											sellToken: quoteParams.sellToken,
 											buyToken: quoteParams.buyToken,
-											receiver: quoteParams.receiver || strategyAddress,
-											sellAmount: quoteParams.sellAmount,
-											buyAmount: quoteParams.buyAmount,
-											validTo: quoteParams.validTo,
-											appData: quoteParams.appData,
-											feeAmount: quoteParams.feeAmount,
-											kind: quoteParams.kind,
-											partiallyFillable: quoteParams.partiallyFillable,
-											sellTokenBalance: quoteParams.sellTokenBalance || SellTokenSource.ERC20,
-											buyTokenBalance: quoteParams.buyTokenBalance || BuyTokenDestination.ERC20,
+											receiver: quoteParams.receiver,
+											sellAmount: (
+												BigInt(quoteParams.sellAmount) - (quoteParams.feeAmount ? BigInt(quoteParams.feeAmount) : 0n)
+											).toString(),
+											buyAmount: buyAmountAfterSlippage.toString(),
+											validTo: Math.floor(Date.now() / 1000) + 600, // 10 minutes from now
+											appData: APP_DATA,
+											feeAmount: '0', // Ensure feeAmount is a string
+											kind: OrderKind.SELL,
+											partiallyFillable: false, // partially_fillable = false in Rust
+											sellTokenBalance: SellTokenSource.ERC20,
+											buyTokenBalance: BuyTokenDestination.ERC20,
 										};
-
-										// Encode the order parameters for EIP-1271 signature
-										const orderDigest = encodeOrderForSignature(orderParams);
+										// Encode the order parameters for EIP-1271 signature and validate with the strategy contract
+										console.log(`    🔐 Calling isValidSignature on strategy contract ${strategyAddress}...`);
+										const { orderDigest, encodedOrder, isValid } = await encodeOrderForSignature(orderParams, strategyAddress, client);
 
 										console.log(`    📝 Encoded order digest: ${orderDigest}`);
+										console.log(`    📦 Encoded order data: ${encodedOrder}`);
+										console.log(`    ${isValid ? '✅ Signature is valid!' : '❌ Signature is invalid!'}`);
+
+										if (!isValid) {
+											console.error(`    ❌ Order signature validation failed. Cannot proceed with sending order.`);
+											continue;
+										}
 
 										// Create the order creation object
+										// For EIP-1271 signatures, we need to provide the encoded order as the signature
+										// This is because the CoW API will call isValidSignature(orderDigest, signature)
+										// where signature is expected to be the encoded order
 										const orderCreation: OrderCreation = {
 											...orderParams,
 											signingScheme: SigningScheme.EIP1271,
-											signature: orderDigest, // Use the encoded order digest as the signature
+											signature: encodedOrder, // Use the encoded order as the signature
 											from: strategyAddress,
 											quoteId: quoteResult.id,
 										};
