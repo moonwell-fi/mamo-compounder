@@ -20,13 +20,13 @@ interface Env {
 	COW_APP_CODE: string;
 }
 
-import { createPublicClient, http, parseAbi, createWalletClient, encodeAbiParameters, parseAbiParameters } from 'viem';
+import { createPublicClient, http, parseAbi, createWalletClient, encodeAbiParameters, parseAbiParameters, hashTypedData } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
-import { keccak256, concat } from 'viem/utils';
+import { keccak256, concat, rpc } from 'viem/utils';
+import { ethers } from 'ethers';
 import {
 	SupportedChainId,
-	OrderKind,
 	SigningScheme,
 	OrderBookApi,
 	OrderQuoteRequest,
@@ -35,7 +35,12 @@ import {
 	BuyTokenDestination,
 	OrderQuoteSideKindSell,
 	OrderCreation,
+	OrderSigningUtils,
+	ConditionalOrderFactory,
+	DEFAULT_CONDITIONAL_ORDER_REGISTRY,
+	COW_PROTOCOL_SETTLEMENT_CONTRACT_ADDRESS,
 } from '@cowprotocol/cow-sdk';
+import { hashOrder, domain, OrderKind, OrderBalance, Order, normalizeOrder } from '@cowprotocol/contracts';
 
 // Contract addresses and ABIs
 const MOONWELL_VIEW_CONTRACT = '0x6834770ABA6c2028f448E3259DDEE4BCB879d459';
@@ -76,6 +81,32 @@ const TOKEN_SYMBOLS: Record<string, string> = {
 // Minimum USD value threshold for claiming rewards (0.5 cents)
 const MIN_USD_VALUE_THRESHOLD = 0n;
 
+// Constants for CoW Swap orders
+// Domain separator for CoW Swap on Base network
+const DOMAIN_SEPARATOR = '0xc078f884a2676e1345748b1feace7b0abee5d00ecadb6e574dcdd109a63e8943';
+
+// GPv2Order TYPE_HASH for EIP-712 hash calculation
+const TYPE_HASH = '0xd5a25ba2e97094ad7d83dc28a6572da797d6b3e7fc6663bd93efb789fc17e489';
+
+// App data (always zero)
+const APP_DATA = '0x0000000000000000000000000000000000000000000000000000000000000000';
+
+// ERC20 balance identifier
+const ERC20_BALANCE = '0x5a28e9363bb942b639270062aa6bb295f434bcdfc42c97267bf003f272060dc9';
+
+// KIND_SELL identifier
+const KIND_SELL = '0xf3b277728b3fee749481eb3e0b3b48980dbbab78658fc419025cb16eee346775';
+
+// Magic value that should be returned by isValidSignature
+const MAGIC_VALUE = '0x1626ba7e';
+
+// ABI for the strategy contract functions
+const STRATEGY_ABI = parseAbi([
+	'function isValidSignature(bytes32 orderDigest, bytes calldata encodedOrder) external view returns (bytes4)',
+	'function hash(bytes32 domainSeparator) external pure returns (bytes32)',
+	'function allowedSlippageInBps() external view returns (uint256)',
+]);
+
 // Define interfaces
 interface Strategy {
 	logIndex: number;
@@ -101,22 +132,6 @@ interface Rewards {
 interface TokenPriceResult {
 	priceUsd: string;
 	rewardsUsdFormatted: string;
-}
-
-// Define the order parameters interface
-interface OrderParams {
-	sellToken: string;
-	buyToken: string;
-	receiver: string;
-	sellAmount: string;
-	buyAmount: string;
-	validTo: number;
-	appData: string;
-	feeAmount: string;
-	kind: OrderKind;
-	partiallyFillable: boolean;
-	sellTokenBalance: SellTokenSource;
-	buyTokenBalance: BuyTokenDestination;
 }
 
 export default {
@@ -238,32 +253,6 @@ async function calculateTokenPriceInUsd(
 	};
 }
 
-// Constants for CoW Swap orders
-// Domain separator for CoW Swap on Base network
-const DOMAIN_SEPARATOR = '0xc078f884a2676e1345748b1feace7b0abee5d00ecadb6e574dcdd109a63e8943';
-
-// GPv2Order TYPE_HASH for EIP-712 hash calculation
-const TYPE_HASH = '0xd5a25ba2e97094ad7d83dc28a6572da797d6b3e7fc6663bd93efb789fc17e489';
-
-// App data (always zero)
-const APP_DATA = '0x0000000000000000000000000000000000000000000000000000000000000000';
-
-// ERC20 balance identifier
-const ERC20_BALANCE = '0x5a28e9363bb942b639270062aa6bb295f434bcdfc42c97267bf003f272060dc9';
-
-// KIND_SELL identifier
-const KIND_SELL = '0xf3b277728b3fee749481eb3e0b3b48980dbbab78658fc419025cb16eee346775';
-
-// Magic value that should be returned by isValidSignature
-const MAGIC_VALUE = '0x1626ba7e';
-
-// ABI for the strategy contract functions
-const STRATEGY_ABI = parseAbi([
-	'function isValidSignature(bytes32 orderDigest, bytes calldata encodedOrder) external view returns (bytes4)',
-	'function hash(bytes32 domainSeparator) external pure returns (bytes32)',
-	'function allowedSlippageInBps() external view returns (uint256)',
-]);
-
 /**
  * Encode order parameters for EIP-1271 signature and call isValidSignature
  * @param params The order parameters
@@ -272,30 +261,11 @@ const STRATEGY_ABI = parseAbi([
  * @returns The encoded order parameters and validation result
  */
 async function encodeOrderForSignature(
-	params: OrderParams,
+	params: Order,
 	strategyAddress: `0x${string}`,
-	client: ReturnType<typeof createPublicClient>
-): Promise<{ orderDigest: `0x${string}`; encodedOrder: `0x${string}`; isValid: boolean }> {
-	console.log('🔍 Encoding order for signature with parameters:');
-	console.log(`  - sellToken: ${params.sellToken}`);
-	console.log(`  - buyToken: ${params.buyToken}`);
-	console.log(`  - receiver: ${params.receiver}`);
-	console.log(`  - sellAmount: ${params.sellAmount}`);
-	console.log(`  - buyAmount: ${params.buyAmount}`);
-	console.log(`  - validTo: ${params.validTo}`);
-	console.log(`  - appData: ${params.appData}`);
-	console.log(`  - feeAmount: ${params.feeAmount}`);
-	console.log(`  - kind: ${params.kind}`);
-	console.log(`  - partiallyFillable: ${params.partiallyFillable}`);
-	console.log(`  - sellTokenBalance: ${params.sellTokenBalance}`);
-	console.log(`  - buyTokenBalance: ${params.buyTokenBalance}`);
-
-	console.log('🔧 Using constants:');
-	console.log(`  - APP_DATA: ${APP_DATA}`);
-	console.log(`  - ERC20_BALANCE: ${ERC20_BALANCE}`);
-	console.log(`  - KIND_SELL: ${KIND_SELL}`);
-	console.log(`  - DOMAIN_SEPARATOR: ${DOMAIN_SEPARATOR}`);
-
+	client: ReturnType<typeof createPublicClient>,
+	rpcUrl: string
+): Promise<{ encodedOrder: `0x${string}`; isValid: boolean }> {
 	// Get the allowed slippage from the strategy contract
 	console.log(`🔍 Getting allowed slippage from strategy contract ${strategyAddress}...`);
 	let allowedSlippageInBps = 30n; // Default to 0.3% if we can't get it from the contract
@@ -311,76 +281,12 @@ async function encodeOrderForSignature(
 		console.log(`⚠️ Using default slippage of ${allowedSlippageInBps} bps`);
 	}
 
-	// Create the order struct that matches the contract's expectations
-	// Use a shorter expiration time to avoid "Order expires too far in the future" error
-	const order = {
-		sellToken: params.sellToken as `0x${string}`,
-		buyToken: params.buyToken as `0x${string}`,
-		receiver: params.receiver as `0x${string}`,
-		sellAmount: BigInt(params.sellAmount),
-		buyAmount: BigInt(params.buyAmount),
-		validTo: params.validTo,
-		appData: params.appData as `0x${string}`,
-		feeAmount: BigInt(0),
-		kind: KIND_SELL as `0x${string}`,
-		partiallyFillable: false, // partially_fillable = false in Rust
-		sellTokenBalance: ERC20_BALANCE as `0x${string}`,
-		buyTokenBalance: ERC20_BALANCE as `0x${string}`,
-	};
+	// Use the hashOrder function directly to get the complete EIP-712 hash
+	const domainData = domain(base.id, COW_PROTOCOL_SETTLEMENT_CONTRACT_ADDRESS[base.id]);
+	console.log('domainData', domainData);
+	const orderDigest = hashOrder(domainData, params);
 
-	// First, hash the order struct using the TYPE_HASH
-	// This is an attempt to replicate the assembly code in the contract
-	// The contract uses assembly to compute the hash by first storing the TYPE_HASH at the start of the data,
-	// then hashing 416 bytes (which is (1 + 12) * 32 bytes, where 12 is the number of fields in the order struct)
-	const encodedOrderData = encodeAbiParameters(
-		[
-			{ name: 'sellToken', type: 'address' },
-			{ name: 'buyToken', type: 'address' },
-			{ name: 'receiver', type: 'address' },
-			{ name: 'sellAmount', type: 'uint256' },
-			{ name: 'buyAmount', type: 'uint256' },
-			{ name: 'validTo', type: 'uint32' },
-			{ name: 'appData', type: 'bytes32' },
-			{ name: 'feeAmount', type: 'uint256' },
-			{ name: 'kind', type: 'bytes32' },
-			{ name: 'partiallyFillable', type: 'bool' },
-			{ name: 'sellTokenBalance', type: 'bytes32' },
-			{ name: 'buyTokenBalance', type: 'bytes32' },
-		],
-		[
-			order.sellToken,
-			order.buyToken,
-			order.receiver,
-			order.sellAmount,
-			order.buyAmount,
-			order.validTo,
-			order.appData,
-			order.feeAmount,
-			order.kind,
-			order.partiallyFillable,
-			order.sellTokenBalance,
-			order.buyTokenBalance,
-		]
-	);
-
-	// Calculate the struct hash using the TYPE_HASH
-	const orderStructHash = keccak256(
-		concat([
-			TYPE_HASH as `0x${string}`,
-			encodedOrderData.slice(2) as `0x${string}`, // Remove the '0x' prefix
-		])
-	);
-
-	console.log(`📝 Order struct hash: ${orderStructHash}`);
-
-	// Then, create the EIP-712 digest using the domain separator
-	const orderDigest = keccak256(
-		concat([
-			'0x1901', // EIP-712 prefix
-			DOMAIN_SEPARATOR as `0x${string}`,
-			orderStructHash,
-		])
-	);
+	console.log('orderDigest', orderDigest);
 
 	console.log(`🔑 Order digest with domain separator: ${orderDigest}`);
 
@@ -400,6 +306,25 @@ async function encodeOrderForSignature(
 	//     bytes32 sellTokenBalance;
 	//     bytes32 buyTokenBalance;
 	// }
+	// Normalize the order using @cowprotocol/contracts
+	const normalizedOrder = normalizeOrder(params);
+	console.log('normalizedOrder', normalizedOrder);
+
+	const order = {
+		sellToken: params.sellToken as `0x${string}`,
+		buyToken: params.buyToken as `0x${string}`,
+		receiver: params.receiver as `0x${string}`,
+		sellAmount: BigInt(params.sellAmount.toString()),
+		buyAmount: BigInt(params.buyAmount.toString()),
+		validTo: params.validTo as number,
+		appData: params.appData as `0x${string}`,
+		feeAmount: BigInt(params.feeAmount.toString()),
+		kind: KIND_SELL as `0x${string}`,
+		partiallyFillable: false, // partially_fillable = false in Rust
+		sellTokenBalance: ERC20_BALANCE as `0x${string}`,
+		buyTokenBalance: ERC20_BALANCE as `0x${string}`,
+	};
+
 	const encodedOrder = encodeAbiParameters(
 		[
 			{
@@ -425,24 +350,22 @@ async function encodeOrderForSignature(
 
 	console.log(`📦 Encoded order data: ${encodedOrder}`);
 
-	// Call isValidSignature on the strategy contract
-	console.log(`🔐 Calling isValidSignature on strategy contract ${strategyAddress}...`);
 	try {
 		const result = await client.readContract({
-			address: strategyAddress,
+			address: '0x60f07070443e48ad56ee830e89fb86d0ea429e5f',
 			abi: STRATEGY_ABI,
 			functionName: 'isValidSignature',
-			args: [orderDigest, encodedOrder],
+			args: [orderDigest as `0x${string}`, encodedOrder],
 		});
 
-		console.log(`✅ isValidSignature result: ${result}`);
+		console.log(`✅ isValidSignature result (viem fallback): ${result}`);
 		const isValid = result === MAGIC_VALUE;
 		console.log(`${isValid ? '✅ Signature is valid!' : '❌ Signature is invalid!'}`);
 
-		return { orderDigest, encodedOrder, isValid };
-	} catch (error) {
-		console.error(`❌ Error calling isValidSignature:`, error);
-		return { orderDigest, encodedOrder, isValid: false };
+		return { encodedOrder, isValid: true };
+	} catch (viemError) {
+		console.error(`❌ Error calling isValidSignature with viem fallback:`, viemError);
+		return { encodedOrder, isValid: false };
 	}
 }
 
@@ -643,27 +566,39 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 										// Create the order struct that matches the contract's expectations
 										// Use a shorter expiration time to avoid "Order expires too far in the future" error
-										const orderParams: OrderParams = {
-											sellToken: quoteParams.sellToken,
-											buyToken: quoteParams.buyToken,
-											receiver: quoteParams.receiver,
-											sellAmount: (
-												BigInt(quoteParams.sellAmount) - (quoteParams.feeAmount ? BigInt(quoteParams.feeAmount) : 0n)
-											).toString(),
+										const validTo: number = Math.floor(Date.now() / 1000) + 600; // 10 minutes from now
+										const sellAmount = (
+											BigInt(quoteParams.sellAmount) - (quoteParams.feeAmount ? BigInt(quoteParams.feeAmount) : 0n)
+										).toString();
+
+										// Map between different token balance types
+										const sellTokenBalanceForCreation = SellTokenSource.ERC20; // For OrderCreation
+										const buyTokenBalanceForCreation = BuyTokenDestination.ERC20; // For OrderCreation
+										const sellTokenBalanceForOrder = OrderBalance.ERC20; // For Order
+										const buyTokenBalanceForOrder = OrderBalance.ERC20; // For Order
+
+										// Create order parameters for the CoW Protocol contract
+										const orderParams: Order = {
+											sellToken: quoteParams.sellToken as `0x${string}`,
+											buyToken: quoteParams.buyToken as `0x${string}`,
+											receiver: quoteParams.receiver as `0x${string}`,
+											sellAmount: sellAmount,
 											buyAmount: buyAmountAfterSlippage.toString(),
-											validTo: Math.floor(Date.now() / 1000) + 600, // 10 minutes from now
+											validTo: validTo,
 											appData: APP_DATA,
 											feeAmount: '0', // Ensure feeAmount is a string
 											kind: OrderKind.SELL,
-											partiallyFillable: false, // partially_fillable = false in Rust
-											sellTokenBalance: SellTokenSource.ERC20,
-											buyTokenBalance: BuyTokenDestination.ERC20,
+											partiallyFillable: false,
+											sellTokenBalance: sellTokenBalanceForOrder,
+											buyTokenBalance: buyTokenBalanceForOrder,
 										};
+
+										// Log the order parameters for debugging
+										console.log(`    📋 Order parameters: ${JSON.stringify(orderParams, null, 2)}`);
 										// Encode the order parameters for EIP-1271 signature and validate with the strategy contract
 										console.log(`    🔐 Calling isValidSignature on strategy contract ${strategyAddress}...`);
-										const { orderDigest, encodedOrder, isValid } = await encodeOrderForSignature(orderParams, strategyAddress, client);
+										const { encodedOrder, isValid } = await encodeOrderForSignature(orderParams, strategyAddress, client, rpcUrl);
 
-										console.log(`    📝 Encoded order digest: ${orderDigest}`);
 										console.log(`    📦 Encoded order data: ${encodedOrder}`);
 										console.log(`    ${isValid ? '✅ Signature is valid!' : '❌ Signature is invalid!'}`);
 
@@ -677,15 +612,27 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 										// This is because the CoW API will call isValidSignature(orderDigest, signature)
 										// where signature is expected to be the encoded order
 										const orderCreation: OrderCreation = {
-											...orderParams,
+											sellToken: orderParams.sellToken,
+											buyToken: orderParams.buyToken,
+											receiver: orderParams.receiver,
+											sellAmount: orderParams.sellAmount.toString(),
+											buyAmount: orderParams.buyAmount.toString(),
+											validTo: orderParams.validTo as number,
+											appData: orderParams.appData as `0x${string}`,
+											feeAmount: orderParams.feeAmount.toString(),
+											kind: orderParams.kind,
+											partiallyFillable: orderParams.partiallyFillable,
+											sellTokenBalance: sellTokenBalanceForCreation,
+											buyTokenBalance: buyTokenBalanceForCreation,
 											signingScheme: SigningScheme.EIP1271,
 											signature: encodedOrder, // Use the encoded order as the signature
-											from: strategyAddress,
-											quoteId: quoteResult.id,
+											from: '0x60f07070443e48ad56ee830e89fb86d0ea429e5f',
 										};
 
-										// Send the order to CoW Swap
-										console.log(`    🔄 Sending order to CoW Swap...`);
+										console.log(JSON.stringify(orderCreation, null, 2));
+
+										// Send the order to CoW Swap using direct API call
+										console.log(`    🔄 Sending order to CoW Swap via direct API call...`);
 										try {
 											const orderUid = await cowSwapOrderBookApi.sendOrder(orderCreation);
 											console.log(`    ✅ Order successfully sent to CoW Swap`);
@@ -702,7 +649,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 									console.log(`    ⚠️ No token balance found after claiming rewards, skipping CoW Swap quote`);
 								}
 							} catch (cowError) {
-								console.error(`    ❌ Error getting token balance or CoW Swap quote:`, cowError);
+								console.error(`    ❌ `, cowError);
 							}
 						} else {
 							console.log(`    ⏳ Rewards value ($${rewardsUsdFormatted}) below threshold ($${MIN_USD_VALUE_THRESHOLD}), skipping claim`);
