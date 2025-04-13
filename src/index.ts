@@ -20,7 +20,17 @@ interface Env {
 	COW_APP_CODE: string;
 }
 
-import { createPublicClient, http, parseAbi, createWalletClient, encodeAbiParameters, parseAbiParameters, hashTypedData } from 'viem';
+import {
+	createPublicClient,
+	http,
+	parseAbi,
+	createWalletClient,
+	encodeAbiParameters,
+	parseAbiParameters,
+	hashTypedData,
+	decodeErrorResult,
+	getContract,
+} from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 import { keccak256, concat, rpc } from 'viem/utils';
@@ -41,6 +51,7 @@ import {
 	COW_PROTOCOL_SETTLEMENT_CONTRACT_ADDRESS,
 } from '@cowprotocol/cow-sdk';
 import { hashOrder, domain, OrderKind, OrderBalance, Order, normalizeOrder } from '@cowprotocol/contracts';
+import ERC20MoonwellMorphoStrategyABI from '../abi/ERC20MoonwellMorphoStrategy.json';
 
 // Contract addresses and ABIs
 const MOONWELL_VIEW_CONTRACT = '0x6834770ABA6c2028f448E3259DDEE4BCB879d459';
@@ -81,13 +92,6 @@ const TOKEN_SYMBOLS: Record<string, string> = {
 // Minimum USD value threshold for claiming rewards (0.5 cents)
 const MIN_USD_VALUE_THRESHOLD = 0n;
 
-// Constants for CoW Swap orders
-// Domain separator for CoW Swap on Base network
-const DOMAIN_SEPARATOR = '0xc078f884a2676e1345748b1feace7b0abee5d00ecadb6e574dcdd109a63e8943';
-
-// GPv2Order TYPE_HASH for EIP-712 hash calculation
-const TYPE_HASH = '0xd5a25ba2e97094ad7d83dc28a6572da797d6b3e7fc6663bd93efb789fc17e489';
-
 // App data (always zero)
 const APP_DATA = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
@@ -100,12 +104,8 @@ const KIND_SELL = '0xf3b277728b3fee749481eb3e0b3b48980dbbab78658fc419025cb16eee3
 // Magic value that should be returned by isValidSignature
 const MAGIC_VALUE = '0x1626ba7e';
 
-// ABI for the strategy contract functions
-const STRATEGY_ABI = parseAbi([
-	'function isValidSignature(bytes32 orderDigest, bytes calldata encodedOrder) external view returns (bytes4)',
-	'function hash(bytes32 domainSeparator) external pure returns (bytes32)',
-	'function allowedSlippageInBps() external view returns (uint256)',
-]);
+// Replace the STRATEGY_ABI constant with the imported ABI
+const STRATEGY_ABI = ERC20MoonwellMorphoStrategyABI;
 
 // Define interfaces
 interface Strategy {
@@ -133,6 +133,23 @@ interface TokenPriceResult {
 	priceUsd: string;
 	rewardsUsdFormatted: string;
 }
+
+const CHAINLINK_SWAP_CHECKER_PROXY = '0x1e297b2bCFAeB73dCd5CFE37B1C91b504dc32909' as const;
+
+// Add the contract ABI for the Chainlink Swap Checker
+const CHAINLINK_SWAP_CHECKER_ABI = [
+	{
+		inputs: [
+			{ internalType: 'uint256', name: 'amountIn', type: 'uint256' },
+			{ internalType: 'address', name: 'tokenIn', type: 'address' },
+			{ internalType: 'address', name: 'tokenOut', type: 'address' },
+		],
+		name: 'getExpectedOut',
+		outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
+		stateMutability: 'view',
+		type: 'function',
+	},
+] as const;
 
 export default {
 	// Fetch handler for HTTP requests - provides basic information about the worker
@@ -270,11 +287,12 @@ async function encodeOrderForSignature(
 	console.log(`🔍 Getting allowed slippage from strategy contract ${strategyAddress}...`);
 	let allowedSlippageInBps = 30n; // Default to 0.3% if we can't get it from the contract
 	try {
-		allowedSlippageInBps = await client.readContract({
+		const slippageResult = await client.readContract({
 			address: strategyAddress,
 			abi: STRATEGY_ABI,
 			functionName: 'allowedSlippageInBps',
 		});
+		allowedSlippageInBps = BigInt(slippageResult.toString());
 		console.log(`✅ Allowed slippage: ${allowedSlippageInBps} bps`);
 	} catch (error) {
 		console.error(`❌ Error getting allowed slippage from contract:`, error);
@@ -283,32 +301,9 @@ async function encodeOrderForSignature(
 
 	// Use the hashOrder function directly to get the complete EIP-712 hash
 	const domainData = domain(base.id, COW_PROTOCOL_SETTLEMENT_CONTRACT_ADDRESS[base.id]);
-	console.log('domainData', domainData);
 	const orderDigest = hashOrder(domainData, params);
 
-	console.log('orderDigest', orderDigest);
-
 	console.log(`🔑 Order digest with domain separator: ${orderDigest}`);
-
-	// Encode the order data for the isValidSignature call
-	// According to GPv2Order.Data struct:
-	// struct Data {
-	//     IERC20 sellToken;
-	//     IERC20 buyToken;
-	//     address receiver;
-	//     uint256 sellAmount;
-	//     uint256 buyAmount;
-	//     uint32 validTo;
-	//     bytes32 appData;
-	//     uint256 feeAmount;
-	//     bytes32 kind;
-	//     bool partiallyFillable;
-	//     bytes32 sellTokenBalance;
-	//     bytes32 buyTokenBalance;
-	// }
-	// Normalize the order using @cowprotocol/contracts
-	const normalizedOrder = normalizeOrder(params);
-	console.log('normalizedOrder', normalizedOrder);
 
 	const order = {
 		sellToken: params.sellToken as `0x${string}`,
@@ -320,7 +315,7 @@ async function encodeOrderForSignature(
 		appData: params.appData as `0x${string}`,
 		feeAmount: BigInt(params.feeAmount.toString()),
 		kind: KIND_SELL as `0x${string}`,
-		partiallyFillable: false, // partially_fillable = false in Rust
+		partiallyFillable: false,
 		sellTokenBalance: ERC20_BALANCE as `0x${string}`,
 		buyTokenBalance: ERC20_BALANCE as `0x${string}`,
 	};
@@ -351,20 +346,41 @@ async function encodeOrderForSignature(
 	console.log(`📦 Encoded order data: ${encodedOrder}`);
 
 	try {
-		const result = await client.readContract({
-			address: '0x60f07070443e48ad56ee830e89fb86d0ea429e5f',
+		const result = await client.simulateContract({
+			address: strategyAddress,
 			abi: STRATEGY_ABI,
 			functionName: 'isValidSignature',
 			args: [orderDigest as `0x${string}`, encodedOrder],
 		});
 
 		console.log(`✅ isValidSignature result (viem fallback): ${result}`);
-		const isValid = result === MAGIC_VALUE;
+		const isValid = result.result === MAGIC_VALUE;
 		console.log(`${isValid ? '✅ Signature is valid!' : '❌ Signature is invalid!'}`);
 
-		return { encodedOrder, isValid: true };
-	} catch (viemError) {
-		console.error(`❌ Error calling isValidSignature with viem fallback:`, viemError);
+		return { encodedOrder, isValid };
+	} catch (error: any) {
+		// Try to decode the error if it has data
+		if (error.cause?.data) {
+			try {
+				const decodedError = decodeErrorResult({
+					abi: STRATEGY_ABI as any, // Type assertion to handle the ABI type
+					data: error.cause.data,
+				});
+				console.error(`📝 Decoded error:`, decodedError);
+			} catch (decodeError) {
+				console.error(`❌ Could not decode error:`, decodeError);
+			}
+		}
+
+		console.error(`❌ Error calling isValidSignature with viem fallback:`, {
+			error: error.message,
+			cause: error.cause?.message,
+			stack: error.stack,
+			contractAddress: strategyAddress,
+			orderDigest,
+			encodedOrder,
+		});
+
 		return { encodedOrder, isValid: false };
 	}
 }
@@ -523,7 +539,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 								if (tokenBalance > 0n) {
 									// Calculate the USD value of the actual token balance
-									const { priceUsd, rewardsUsdFormatted } = await calculateTokenPriceInUsd(client, reward.rewardToken, tokenBalance);
+									const { rewardsUsdFormatted } = await calculateTokenPriceInUsd(client, reward.rewardToken, tokenBalance);
 
 									// Parse the USD value to check against threshold
 									const tokenBalanceUsdValue = parseFloat(rewardsUsdFormatted);
@@ -542,31 +558,36 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 										// Extract order parameters from the quote response
 										const quoteParams = quoteResult.quote;
 
-										// Create an order object with the parameters from the quote
-										console.log(`    🔄 Encoding order using EIP-1271...`);
-
 										// Get the allowed slippage from the strategy contract
 										console.log(`🔍 Getting allowed slippage from strategy contract ${strategyAddress}...`);
 										let allowedSlippageInBps = 30n; // Default to 0.3% if we can't get it from the contract
 										try {
-											allowedSlippageInBps = await client.readContract({
+											allowedSlippageInBps = (await client.readContract({
 												address: strategyAddress,
 												abi: STRATEGY_ABI,
 												functionName: 'allowedSlippageInBps',
-											});
+											})) as bigint;
 											console.log(`✅ Allowed slippage: ${allowedSlippageInBps} bps`);
 										} catch (error) {
 											console.error(`❌ Error getting allowed slippage from contract:`, error);
 											console.log(`⚠️ Using default slippage of ${allowedSlippageInBps} bps`);
 										}
 
-										// Calculate the buy amount after slippage
-										const buyAmountAfterSlippage = (BigInt(quoteParams.buyAmount) * (10000n - allowedSlippageInBps)) / 10000n;
-										console.log(`📊 Buy amount after slippage: ${buyAmountAfterSlippage.toString()}`);
+										// Get the expected output from the contract
+										const expectedOut = await client.readContract({
+											address: CHAINLINK_SWAP_CHECKER_PROXY,
+											abi: CHAINLINK_SWAP_CHECKER_ABI,
+											functionName: 'getExpectedOut',
+											args: [BigInt(quoteParams.sellAmount), quoteParams.sellToken, quoteParams.buyToken],
+										});
+
+										// Calculate minimum output with slippage
+										const minOut = (BigInt(expectedOut.toString()) * (10000n - allowedSlippageInBps)) / 10000n;
+										console.log(`📊 Expected output from Chainlink: ${expectedOut.toString()}`);
+										console.log(`📊 Minimum output after slippage: ${minOut.toString()}`);
 
 										// Create the order struct that matches the contract's expectations
-										// Use a shorter expiration time to avoid "Order expires too far in the future" error
-										const validTo: number = Math.floor(Date.now() / 1000) + 600; // 10 minutes from now
+										const validTo: number = Math.floor(Date.now() / 1000) + 1800; // 30 minutes from now
 										const sellAmount = (
 											BigInt(quoteParams.sellAmount) - (quoteParams.feeAmount ? BigInt(quoteParams.feeAmount) : 0n)
 										).toString();
@@ -583,7 +604,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 											buyToken: quoteParams.buyToken as `0x${string}`,
 											receiver: quoteParams.receiver as `0x${string}`,
 											sellAmount: sellAmount,
-											buyAmount: buyAmountAfterSlippage.toString(),
+											buyAmount: minOut.toString(),
 											validTo: validTo,
 											appData: APP_DATA,
 											feeAmount: '0', // Ensure feeAmount is a string
@@ -626,7 +647,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 											buyTokenBalance: buyTokenBalanceForCreation,
 											signingScheme: SigningScheme.EIP1271,
 											signature: encodedOrder, // Use the encoded order as the signature
-											from: '0x60f07070443e48ad56ee830e89fb86d0ea429e5f',
+											from: strategyAddress,
 										};
 
 										console.log(JSON.stringify(orderCreation, null, 2));
@@ -687,3 +708,4 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 	console.log('Finished processing strategies');
 }
+
