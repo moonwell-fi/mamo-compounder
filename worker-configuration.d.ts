@@ -5,7 +5,6 @@ declare namespace Cloudflare {
 	interface Env {
 		BASE_RPC_URL: string;
 		PRIVATE_KEY: string;
-		CRON_FREQUENCY: string;
 	}
 }
 interface Env extends Cloudflare.Env {}

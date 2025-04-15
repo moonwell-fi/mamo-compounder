@@ -4,102 +4,12 @@
  * This worker fetches strategies from the /strategies endpoint and processes them.
  * It calls the getUserRewards function for each strategy to get their rewards from the Moonwell View contract.
  * When WELL token rewards are found, it logs information about how to claim them using the UNITROLLER contract.
- * It runs on a cron schedule defined by the CRON_FREQUENCY environment variable.
  *
  * - Run `npm run dev --test-scheduled` in your terminal to start a development server and test the scheduled job
  * - Run `npm run deploy` to publish your worker
  */
 
 /// <reference types="@cloudflare/workers-types" />
-
-// Define the environment variables interface
-interface Env {
-	CRON_FREQUENCY: string;
-	BASE_RPC_URL: string;
-	PRIVATE_KEY: string;
-	COW_APP_CODE: string;
-}
-
-import {
-	createPublicClient,
-	http,
-	parseAbi,
-	createWalletClient,
-	encodeAbiParameters,
-	parseAbiParameters,
-	hashTypedData,
-	decodeErrorResult,
-	getContract,
-} from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
-import { base } from 'viem/chains';
-import {
-	SupportedChainId,
-	SigningScheme,
-	OrderBookApi,
-	OrderQuoteRequest,
-	PriceQuality,
-	SellTokenSource,
-	BuyTokenDestination,
-	OrderQuoteSideKindSell,
-	OrderCreation,
-	COW_PROTOCOL_SETTLEMENT_CONTRACT_ADDRESS,
-} from '@cowprotocol/cow-sdk';
-import { hashOrder, domain, OrderKind, OrderBalance, Order, normalizeOrder } from '@cowprotocol/contracts';
-import ERC20MoonwellMorphoStrategyABI from '../abi/ERC20MoonwellMorphoStrategy.json';
-
-// Contract addresses and ABIs
-const MOONWELL_VIEW_CONTRACT = '0x6834770ABA6c2028f448E3259DDEE4BCB879d459';
-const REWARDS_ABI = parseAbi([
-	'struct Rewards { address market; address rewardToken; uint256 supplyRewardsAmount; uint256 borrowRewardsAmount; }',
-	'function getUserRewards(address user) external view returns (Rewards[] memory)',
-]);
-
-// Unitroller contract for claiming rewards
-const UNITROLLER = '0xfBb21d0380beE3312B33c4353c8936a0F13EF26C';
-const UNITROLLER_ABI = parseAbi(['function claimReward(address holder) public']);
-
-// ERC20 ABI for token balance
-const ERC20_ABI = parseAbi(['function balanceOf(address owner) view returns (uint256)']);
-
-// WELL token address
-const WELL = '0xA88594D404727625A9437C3f886C7643872296AE';
-const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
-
-// Chainlink price feeds
-const CHAINLINK_WELL_USD = '0xc15d9944dAefE2dB03e53bef8DDA25a56832C5fe';
-const CHAINLINK_ABI = parseAbi([
-	'function latestRoundData() external view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
-]);
-
-// Map of token addresses to their Chainlink price feed addresses
-const TOKEN_PRICE_FEEDS: Record<string, string> = {
-	[WELL.toLowerCase()]: CHAINLINK_WELL_USD,
-	// Add more token price feeds here as needed
-};
-
-// Map of token addresses to their symbols
-const TOKEN_SYMBOLS: Record<string, string> = {
-	[WELL.toLowerCase()]: 'WELL',
-	// Add more token symbols here as needed
-};
-
-const MIN_USD_VALUE_THRESHOLD = 0.009;
-
-// App data (always zero)
-const APP_DATA = '0x0000000000000000000000000000000000000000000000000000000000000000';
-
-// ERC20 balance identifier
-const ERC20_BALANCE = '0x5a28e9363bb942b639270062aa6bb295f434bcdfc42c97267bf003f272060dc9';
-
-// KIND_SELL identifier
-const KIND_SELL = '0xf3b277728b3fee749481eb3e0b3b48980dbbab78658fc419025cb16eee346775';
-
-// Magic value that should be returned by isValidSignature
-const MAGIC_VALUE = '0x1626ba7e';
-
-// Replace the STRATEGY_ABI constant with the imported ABI
-const STRATEGY_ABI = ERC20MoonwellMorphoStrategyABI;
 
 // Define interfaces
 interface Strategy {
@@ -128,6 +38,48 @@ interface TokenPriceResult {
 	rewardsUsdFormatted: string;
 }
 
+// Define the environment variables interface
+interface Env {
+	BASE_RPC_URL: string;
+	PRIVATE_KEY: string;
+	MIN_USD_VALUE_THRESHOLD: string;
+}
+
+import {
+	MOONWELL_VIEW_CONTRACT,
+	REWARDS_ABI,
+	UNITROLLER,
+	UNITROLLER_ABI,
+	ERC20_ABI,
+	USDC,
+	CHAINLINK_ABI,
+	TOKEN_PRICE_FEEDS,
+	TOKEN_SYMBOLS,
+	APP_DATA,
+	ERC20_BALANCE,
+	KIND_SELL,
+	MAGIC_VALUE,
+	STRATEGY_ABI,
+} from './constants';
+
+import { createPublicClient, http, parseAbi, createWalletClient, encodeAbiParameters, decodeErrorResult } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { base } from 'viem/chains';
+import {
+	SupportedChainId,
+	SigningScheme,
+	OrderBookApi,
+	OrderQuoteRequest,
+	PriceQuality,
+	SellTokenSource,
+	BuyTokenDestination,
+	OrderQuoteSideKindSell,
+	OrderCreation,
+	COW_PROTOCOL_SETTLEMENT_CONTRACT_ADDRESS,
+} from '@cowprotocol/cow-sdk';
+import { hashOrder, domain, OrderKind, OrderBalance, Order, normalizeOrder } from '@cowprotocol/contracts';
+
+// Constants that are not moved to constants.ts since they are specific to this file
 const CHAINLINK_SWAP_CHECKER_PROXY = '0x1e297b2bCFAeB73dCd5CFE37B1C91b504dc32909' as const;
 
 // Add the contract ABI for the Chainlink Swap Checker
@@ -144,6 +96,15 @@ const CHAINLINK_SWAP_CHECKER_ABI = [
 		type: 'function',
 	},
 ] as const;
+
+// Create a public client for the Base network
+const baseClient = createPublicClient({
+	chain: base,
+	transport: http(),
+}) as any;
+
+// Create a single instance of OrderBookApi for CoW Swap
+const cowSwapOrderBookApi = new OrderBookApi({ chainId: SupportedChainId.BASE });
 
 export default {
 	// Fetch handler for HTTP requests - provides basic information about the worker
@@ -166,7 +127,6 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 	// Add prominent logging with clear markers
 	console.log('==========================================================');
 	console.log('🕒 SCHEDULED JOB STARTED 🕒');
-	console.log(`🔄 Running with frequency: ${env.CRON_FREQUENCY}`);
 	console.log(`⏰ Scheduled time: ${new Date(controller.scheduledTime).toISOString()}`);
 	console.log('==========================================================');
 
@@ -176,8 +136,6 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 	}
 
 	try {
-		// Fetch strategies from the endpoint
-		console.log('📡 Fetching strategies from endpoint...');
 		const response = await fetch('https://mamo-indexer.moonwell.workers.dev/strategies');
 
 		if (!response.ok) {
@@ -187,8 +145,8 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 		const strategiesResponse: StrategiesResponse = await response.json();
 		console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
 
-		// Process the strategies with all environment variables
-		await processStrategies(strategiesResponse.strategies, env.BASE_RPC_URL, env.PRIVATE_KEY, env.COW_APP_CODE);
+		// Pass env to processStrategies
+		await processStrategies(strategiesResponse.strategies, env.BASE_RPC_URL, env.PRIVATE_KEY, env);
 
 		console.log('==========================================================');
 		console.log('✅ SCHEDULED JOB COMPLETED SUCCESSFULLY ✅');
@@ -366,7 +324,7 @@ async function encodeOrderForSignature(
 		if (error.cause?.data) {
 			try {
 				const decodedError = decodeErrorResult({
-					abi: STRATEGY_ABI as any, // Type assertion to handle the ABI type
+					abi: STRATEGY_ABI as any,
 					data: error.cause.data,
 				});
 				console.error(`📝 Decoded error:`, decodedError);
@@ -387,15 +345,6 @@ async function encodeOrderForSignature(
 		return { encodedOrder, isValid: false };
 	}
 }
-
-// Create a public client for the Base network
-const baseClient = createPublicClient({
-	chain: base,
-	transport: http(),
-}) as any; // Type assertion to avoid compatibility issues
-
-// Create a single instance of OrderBookApi for CoW Swap
-const cowSwapOrderBookApi = new OrderBookApi({ chainId: SupportedChainId.BASE });
 
 /**
  * Get a CoW Swap quote for swapping tokens
@@ -436,14 +385,14 @@ async function getSwapQuote(strategy: string, sellToken: string, sellAmount: big
 /**
  * Process the strategies by looping over them and fetching rewards for each strategy
  */
-async function processStrategies(strategies: Strategy[], rpcUrl: string, privateKey: string, cowAppCode?: string): Promise<void> {
+async function processStrategies(strategies: Strategy[], rpcUrl: string, privateKey: string, env: Env): Promise<void> {
 	console.log(`Processing ${strategies.length} strategies...`);
 
 	// Create viem client using the provided RPC URL
 	const client = createClient(rpcUrl);
 
-	// Private key is now mandatory
-	console.log(`  ✅ Private key provided for claiming rewards`);
+	// Parse the threshold once at the start
+	const minUsdValueThreshold = parseFloat(env.MIN_USD_VALUE_THRESHOLD);
 
 	for (const strategy of strategies) {
 		console.log(`Processing strategy: ${strategy.strategy}`);
@@ -486,13 +435,13 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 						// Parse the USD value to check against threshold
 						const rewardsUsdValue = parseFloat(rewardsUsdFormatted);
-						const exceedsThreshold = rewardsUsdValue >= MIN_USD_VALUE_THRESHOLD;
+						const exceedsThreshold = rewardsUsdValue >= minUsdValueThreshold;
 
 						// Log the results
 						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
 
 						if (exceedsThreshold) {
-							console.log(`    🚀 Rewards value ($${rewardsUsdFormatted}) exceeds threshold ($${MIN_USD_VALUE_THRESHOLD})`);
+							console.log(`    ✅ Rewards value ($${rewardsUsdFormatted}) exceeds threshold ($${minUsdValueThreshold})`);
 
 							console.log(`    ✅ Calling claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`);
 
@@ -502,7 +451,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								chain: base,
 								transport: http(rpcUrl),
 								account,
-							}) as any; // Type assertion to avoid compatibility issues
+							}) as any;
 
 							const hash = await walletClient.writeContract({
 								address: UNITROLLER as `0x${string}`,
@@ -543,7 +492,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 									console.log(`    💵 Token balance value: $${rewardsUsdFormatted} USD`);
 
 									// Only get a quote if the balance exceeds the threshold
-									if (tokenBalanceUsdValue >= MIN_USD_VALUE_THRESHOLD) {
+									if (tokenBalanceUsdValue >= minUsdValueThreshold) {
 										console.log(`    🔄 Creating CoW Swap quote to swap claimed rewards to USDC...`);
 
 										// Get a CoW Swap quote for the claimed rewards using the actual token balance
@@ -613,7 +562,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 											buyAmount: minOut.toString(),
 											validTo: validTo,
 											appData: APP_DATA,
-											feeAmount: '0', // Ensure feeAmount is a string
+											feeAmount: '0',
 											kind: OrderKind.SELL,
 											partiallyFillable: false,
 											sellTokenBalance: sellTokenBalanceForOrder,
@@ -669,7 +618,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 										}
 									} else {
 										console.log(
-											`    ⏳ Token balance value ($${rewardsUsdFormatted}) below threshold ($${MIN_USD_VALUE_THRESHOLD}), skipping CoW Swap quote`
+											`    ⏳ Token balance value ($${rewardsUsdFormatted}) below threshold ($${minUsdValueThreshold}), skipping CoW Swap quote`
 										);
 									}
 								} else {
@@ -679,7 +628,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								console.error(`    ❌ `, cowError);
 							}
 						} else {
-							console.log(`    ⏳ Rewards value ($${rewardsUsdFormatted}) below threshold ($${MIN_USD_VALUE_THRESHOLD}), skipping claim`);
+							console.log(`    ⏳ Rewards value ($${rewardsUsdFormatted}) below threshold ($${minUsdValueThreshold}), skipping claim`);
 							console.log(
 								`    💡 To manually claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
 							);
@@ -692,7 +641,6 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 						);
 						console.log(`    📈 Current ${getTokenSymbol(reward.rewardToken)} price: $${priceUsd} USD`);
 					} catch (error) {
-						// If we can't get the price, just show the token amount and don't attempt to claim
 						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
 						console.log(
 							`    💡 To manually claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
