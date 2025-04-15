@@ -33,7 +33,6 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
-import { keccak256, concat, rpc } from 'viem/utils';
 import { ethers } from 'ethers';
 import {
 	SupportedChainId,
@@ -45,9 +44,6 @@ import {
 	BuyTokenDestination,
 	OrderQuoteSideKindSell,
 	OrderCreation,
-	OrderSigningUtils,
-	ConditionalOrderFactory,
-	DEFAULT_CONDITIONAL_ORDER_REGISTRY,
 	COW_PROTOCOL_SETTLEMENT_CONTRACT_ADDRESS,
 } from '@cowprotocol/cow-sdk';
 import { hashOrder, domain, OrderKind, OrderBalance, Order, normalizeOrder } from '@cowprotocol/contracts';
@@ -90,7 +86,7 @@ const TOKEN_SYMBOLS: Record<string, string> = {
 };
 
 // Minimum USD value threshold for claiming rewards (0.5 cents)
-const MIN_USD_VALUE_THRESHOLD = 0n;
+const MIN_USD_VALUE_THRESHOLD = 0.001;
 
 // App data (always zero)
 const APP_DATA = '0x0000000000000000000000000000000000000000000000000000000000000000';
@@ -508,20 +504,20 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								account,
 							}) as any; // Type assertion to avoid compatibility issues
 
-							//		const hash = await walletClient.writeContract({
-							//			address: UNITROLLER as `0x${string}`,
-							//			abi: UNITROLLER_ABI,
-							//			functionName: 'claimReward',
-							//			args: [strategyAddress],
-							//		});
+							const hash = await walletClient.writeContract({
+								address: UNITROLLER as `0x${string}`,
+								abi: UNITROLLER_ABI,
+								functionName: 'claimReward',
+								args: [strategyAddress],
+							});
 
-							//		// Wait for transaction receipt
-							//		const receipt = await baseClient.waitForTransactionReceipt({
-							//			hash,
-							//		});
+							// Wait for transaction receipt
+							const receipt = await baseClient.waitForTransactionReceipt({
+								hash,
+							});
 
-							//	console.log(`    📝 Transaction hash: ${hash}`);
-							//	console.log(`    📝 Transaction receipt: ${JSON.stringify(receipt.status)}`);
+							console.log(`    📝 Transaction hash: ${hash}`);
+							console.log(`    📝 Transaction receipt: ${JSON.stringify(receipt.status)}`);
 
 							// After claiming rewards, get the actual token balance and create a CoW Swap quote
 							try {
