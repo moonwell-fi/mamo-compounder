@@ -174,13 +174,13 @@ async function processScheduledJob(controller: ScheduledController, env: Env, ct
 
 	// Validate that PRIVATE_KEY is provided
 	if (!env.PRIVATE_KEY) {
-		throw new Error('PRIVATE_KEY environment variable is required');
+		throw new Error('PRIVATE_KEY environment variabFailed to fetch strategiesle is required');
 	}
 
 	try {
 		// Fetch strategies from the endpoint
 		console.log('📡 Fetching strategies from endpoint...');
-		const response = await fetch('http://localhost:8787/strategies');
+		const response = await fetch('https://mamo-indexer.moonwell.workers.dev/strategies');
 
 		if (!response.ok) {
 			throw new Error(`Failed to fetch strategies: ${response.status} ${response.statusText}`);
@@ -477,6 +477,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 				if (hasRewards && hasTokenPriceFeed) {
 					try {
+						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
 						// Get the token price and calculate USD value
 						const { priceUsd, rewardsUsdFormatted } = await calculateTokenPriceInUsd(
 							client,
