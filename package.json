@@ -17,6 +17,7 @@
 		"wrangler": "^4.9.1"
 	},
 	"dependencies": {
+		"@cowprotocol/contracts": "^1.7.0",
 		"@cowprotocol/cow-sdk": "^5.10.2",
 		"viem": "^2.26.2"
 	}

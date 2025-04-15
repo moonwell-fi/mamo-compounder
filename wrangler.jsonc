@@ -29,10 +29,10 @@
 	 */
 	"vars": {
 		"BASE_RPC_URL": "https://rpc.moonwell.fi/main/evm/8453",
-		"CRON_FREQUENCY": "*/2 * * * *"
+		"CRON_FREQUENCY": "2 * * * *"
 	},
 	"triggers": {
-		"crons": ["*/2 * * * *"]
+		"crons": ["2 * * * *"]
 	}
 	/**
 	 * Note: Use secrets to store sensitive data.

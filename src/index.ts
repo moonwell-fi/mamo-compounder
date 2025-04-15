@@ -33,7 +33,6 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
-import { ethers } from 'ethers';
 import {
 	SupportedChainId,
 	SigningScheme,
@@ -85,8 +84,7 @@ const TOKEN_SYMBOLS: Record<string, string> = {
 	// Add more token symbols here as needed
 };
 
-// Minimum USD value threshold for claiming rewards (0.5 cents)
-const MIN_USD_VALUE_THRESHOLD = 0.001;
+const MIN_USD_VALUE_THRESHOLD = 0.009;
 
 // App data (always zero)
 const APP_DATA = '0x0000000000000000000000000000000000000000000000000000000000000000';
@@ -252,9 +250,12 @@ async function calculateTokenPriceInUsd(
 	// Extract the price (answer) from the response
 	const tokenPriceUsd = priceData[1]; // answer is at index 1
 
+	// Ensure the price is positive (Chainlink can return negative values in some cases)
+	const absolutePriceUsd = tokenPriceUsd < 0 ? BigInt(-tokenPriceUsd) : BigInt(tokenPriceUsd);
+
 	// Calculate USD value of the amount
 	// Assuming token has 18 decimals, price has 8 decimals
-	const rewardsUsd = (amount * BigInt(tokenPriceUsd)) / BigInt(10n ** 18n);
+	const rewardsUsd = (amount * absolutePriceUsd) / BigInt(10n ** 18n);
 
 	// Format USD value with 8 decimal places
 	const rewardsUsdFormatted = (Number(rewardsUsd) / 10 ** 8).toFixed(8);
@@ -288,7 +289,13 @@ async function encodeOrderForSignature(
 			abi: STRATEGY_ABI,
 			functionName: 'allowedSlippageInBps',
 		});
-		allowedSlippageInBps = BigInt(slippageResult.toString());
+		// Ensure we have a valid bigint value
+		allowedSlippageInBps = BigInt(String(slippageResult));
+		// Ensure slippage is not greater than 10000 (100%)
+		if (allowedSlippageInBps > 10000n) {
+			console.warn(`⚠️ Slippage value ${allowedSlippageInBps} is too high, capping at 10000 (100%)`);
+			allowedSlippageInBps = 10000n;
+		}
 		console.log(`✅ Allowed slippage: ${allowedSlippageInBps} bps`);
 	} catch (error) {
 		console.error(`❌ Error getting allowed slippage from contract:`, error);
@@ -419,14 +426,7 @@ async function getSwapQuote(strategy: string, sellToken: string, sellAmount: big
 	};
 
 	try {
-		// Get a quote instead of posting an order
-		const quoteAndPost = await cowSwapOrderBookApi.getQuote(parameters);
-
-		// Log the quote information
-		console.log(`    ✅ CoW Swap quote received`);
-		console.log(`      - Quote details: ${JSON.stringify(quoteAndPost, null, 2)}`);
-
-		return quoteAndPost;
+		return cowSwapOrderBookApi.getQuote(parameters);
 	} catch (error) {
 		console.error(`    ❌ Error getting CoW Swap quote:`, error);
 		throw error;
@@ -477,7 +477,6 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 				if (hasRewards && hasTokenPriceFeed) {
 					try {
-						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
 						// Get the token price and calculate USD value
 						const { priceUsd, rewardsUsdFormatted } = await calculateTokenPriceInUsd(
 							client,
@@ -497,7 +496,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 							console.log(`    ✅ Calling claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`);
 
-							// Implement the wallet client to call the unitroller
+							//Implement the wallet client to call the unitroller
 							const account = privateKeyToAccount(privateKey as `0x${string}`);
 							const walletClient = createWalletClient({
 								chain: base,
@@ -520,7 +519,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 							console.log(`    📝 Transaction hash: ${hash}`);
 							console.log(`    📝 Transaction receipt: ${JSON.stringify(receipt.status)}`);
 
-							// After claiming rewards, get the actual token balance and create a CoW Swap quote
+							//After claiming rewards, get the actual token balance and create a CoW Swap quote
 							try {
 								console.log(`    🔄 Getting actual token balance after claiming rewards...`);
 
@@ -550,8 +549,6 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 										// Get a CoW Swap quote for the claimed rewards using the actual token balance
 										const quoteResult = await getSwapQuote(strategyAddress, reward.rewardToken, tokenBalance, USDC);
 
-										console.log(`    🎉 Successfully got CoW Swap quote for the claimed rewards`);
-
 										// Extract order parameters from the quote response
 										const quoteParams = quoteResult.quote;
 
@@ -559,11 +556,18 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 										console.log(`🔍 Getting allowed slippage from strategy contract ${strategyAddress}...`);
 										let allowedSlippageInBps = 30n; // Default to 0.3% if we can't get it from the contract
 										try {
-											allowedSlippageInBps = (await client.readContract({
+											const slippageResult = await client.readContract({
 												address: strategyAddress,
 												abi: STRATEGY_ABI,
 												functionName: 'allowedSlippageInBps',
-											})) as bigint;
+											});
+											// Ensure we have a valid bigint value
+											allowedSlippageInBps = BigInt(String(slippageResult));
+											// Ensure slippage is not greater than 10000 (100%)
+											if (allowedSlippageInBps > 10000n) {
+												console.warn(`⚠️ Slippage value ${allowedSlippageInBps} is too high, capping at 10000 (100%)`);
+												allowedSlippageInBps = 10000n;
+											}
 											console.log(`✅ Allowed slippage: ${allowedSlippageInBps} bps`);
 										} catch (error) {
 											console.error(`❌ Error getting allowed slippage from contract:`, error);
@@ -580,14 +584,19 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 										// Calculate minimum output with slippage
 										const minOut = (BigInt(expectedOut.toString()) * (10000n - allowedSlippageInBps)) / 10000n;
+
 										console.log(`📊 Expected output from Chainlink: ${expectedOut.toString()}`);
 										console.log(`📊 Minimum output after slippage: ${minOut.toString()}`);
 
 										// Create the order struct that matches the contract's expectations
 										const validTo: number = Math.floor(Date.now() / 1000) + 1800; // 30 minutes from now
-										const sellAmount = (
-											BigInt(quoteParams.sellAmount) - (quoteParams.feeAmount ? BigInt(quoteParams.feeAmount) : 0n)
-										).toString();
+
+										// Calculate sell amount and ensure it's not negative
+										const sellAmountBigInt = BigInt(quoteParams.sellAmount);
+										const feeAmountBigInt = quoteParams.feeAmount ? BigInt(quoteParams.feeAmount) : 0n;
+
+										// Ensure fee doesn't exceed sell amount to avoid negative values
+										const sellAmount = feeAmountBigInt >= sellAmountBigInt ? '0' : (sellAmountBigInt - feeAmountBigInt).toString();
 
 										// Map between different token balance types
 										const sellTokenBalanceForCreation = SellTokenSource.ERC20; // For OrderCreation
@@ -682,19 +691,14 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 							)} (≈ $${rewardsUsdFormatted} USD)`
 						);
 						console.log(`    📈 Current ${getTokenSymbol(reward.rewardToken)} price: $${priceUsd} USD`);
-					} catch (priceError) {
+					} catch (error) {
 						// If we can't get the price, just show the token amount and don't attempt to claim
 						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
-						console.log(`    ⚠️ Unable to determine USD value, skipping automatic claim`);
 						console.log(
 							`    💡 To manually claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
 						);
-						console.log(
-							`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
-								reward.rewardToken
-							)} (USD value unavailable)`
-						);
-						console.error(`    ❌ Error fetching ${getTokenSymbol(reward.rewardToken)} price:`, priceError);
+						console.log(`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(reward.rewardToken)}`);
+						console.error(`    ❌ Error fetching ${getTokenSymbol(reward.rewardToken)} price:`, error);
 					}
 				}
 			}
@@ -702,7 +706,4 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 			console.error(`  Error fetching rewards for strategy ${strategy.strategy}:`, error);
 		}
 	}
-
-	console.log('Finished processing strategies');
 }
-
