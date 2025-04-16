@@ -379,14 +379,8 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 	const minUsdValueThreshold = parseFloat(env.MIN_USD_VALUE_THRESHOLD);
 
 	for (const strategy of strategies) {
-		console.log(`Processing strategy: ${strategy.strategy}`);
-		console.log(`  User: ${strategy.user}`);
-		console.log(`  Implementation: ${strategy.implementation}`);
-
 		try {
 			// Call the getUserRewards function for this strategy
-			console.log(`  Fetching rewards for strategy: ${strategy.strategy}...`);
-
 			// Convert the strategy address to a proper 0x-prefixed address
 			const strategyAddress = strategy.strategy as `0x${string}`;
 
@@ -398,24 +392,20 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 				args: [strategyAddress],
 			})) as Rewards[];
 
-			console.log(`  Found ${rewards.length} rewards for strategy ${strategy.strategy}`);
-
 			// Process each reward
 			for (let i = 0; i < rewards.length; i++) {
 				const reward = rewards[i];
 
 				// Check if there are rewards to claim
 				const hasRewards = reward.supplyRewardsAmount > 0n;
+
 				const hasTokenPriceFeed = TOKEN_PRICE_FEEDS[reward.rewardToken.toLowerCase()] !== undefined;
 
 				if (hasRewards && hasTokenPriceFeed) {
+					console.log(`  Found ${TOKEN_SYMBOLS[reward.rewardToken.toLowerCase()]} rewards for strategy ${strategy.strategy}`);
 					try {
 						// Get the token price and calculate USD value
-						const { priceUsd, rewardsUsdFormatted } = await calculateTokenPriceInUsd(
-							client,
-							reward.rewardToken,
-							reward.supplyRewardsAmount
-						);
+						const { rewardsUsdFormatted } = await calculateTokenPriceInUsd(client, reward.rewardToken, reward.supplyRewardsAmount);
 
 						console.log(
 							`  ${strategyAddress}  💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
@@ -429,8 +419,6 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 						if (exceedsThreshold) {
 							console.log(`    ✅ Rewards value ($${rewardsUsdFormatted}) exceeds threshold ($${minUsdValueThreshold})`);
-
-							console.log(`    ✅ Calling claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`);
 
 							//Implement the wallet client to call the unitroller
 							const account = privateKeyToAccount(privateKey as `0x${string}`);
@@ -452,12 +440,10 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								hash,
 							});
 
-							console.log(`    📝 Transaction hash: ${hash}`);
+							console.log(`    📝 Rewards claimed. Transaction hash: ${hash}`);
 
 							//After claiming rewards, get the actual token balance and create a CoW Swap quote
 							try {
-								console.log(`    🔄 Getting actual token balance after claiming rewards...`);
-
 								// Get the actual token balance of the strategy
 								const tokenBalance = await client.readContract({
 									address: reward.rewardToken,

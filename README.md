@@ -1,4 +1,5 @@
 ## TODO 
 
 - [ ] Add pagination
-- [ ] Check feeAmount and slippage
+- [x] Check feeAmount and slippage
+- [ ] Move functions to it own files
