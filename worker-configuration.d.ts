@@ -3,6 +3,8 @@
 declare namespace Cloudflare {
 	// eslint-disable-next-line @typescript-eslint/no-empty-interface,@typescript-eslint/no-empty-object-type
 	interface Env {
+		BASE_RPC_URL: string;
+		PRIVATE_KEY: string;
 	}
 }
 interface Env extends Cloudflare.Env {}
