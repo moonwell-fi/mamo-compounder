@@ -592,10 +592,6 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 							console.log(`    ⏳ Rewards value ($${rewardsUsdFormatted}) below threshold ($${minUsdValueThreshold}), skipping claim`);
 						}
 					} catch (error) {
-						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
-						console.log(
-							`    💡 To manually claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
-						);
 						console.log(`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(reward.rewardToken)}`);
 						console.error(`    ❌ Error fetching ${getTokenSymbol(reward.rewardToken)} price:`, error);
 					}
