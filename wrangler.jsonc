@@ -32,7 +32,7 @@
 		"MIN_USD_VALUE_THRESHOLD": "0.009"
 	},
 	"triggers": {
-		"crons": ["* * * * * "]
+		"crons": ["*/5 * * * * "]
 	}
 	/**
 	 * Note: Use secrets to store sensitive data.

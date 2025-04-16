@@ -60,6 +60,8 @@ import {
 	KIND_SELL,
 	MAGIC_VALUE,
 	STRATEGY_ABI,
+	CHAINLINK_SWAP_CHECKER_PROXY,
+	CHAINLINK_SWAP_CHECKER_ABI,
 } from './constants';
 
 import { createPublicClient, http, parseAbi, createWalletClient, encodeAbiParameters, decodeErrorResult } from 'viem';
@@ -78,24 +80,6 @@ import {
 	COW_PROTOCOL_SETTLEMENT_CONTRACT_ADDRESS,
 } from '@cowprotocol/cow-sdk';
 import { hashOrder, domain, OrderKind, OrderBalance, Order, normalizeOrder } from '@cowprotocol/contracts';
-
-// Constants that are not moved to constants.ts since they are specific to this file
-const CHAINLINK_SWAP_CHECKER_PROXY = '0x1e297b2bCFAeB73dCd5CFE37B1C91b504dc32909' as const;
-
-// Add the contract ABI for the Chainlink Swap Checker
-const CHAINLINK_SWAP_CHECKER_ABI = [
-	{
-		inputs: [
-			{ internalType: 'uint256', name: 'amountIn', type: 'uint256' },
-			{ internalType: 'address', name: 'tokenIn', type: 'address' },
-			{ internalType: 'address', name: 'tokenOut', type: 'address' },
-		],
-		name: 'getExpectedOut',
-		outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
-		stateMutability: 'view',
-		type: 'function',
-	},
-] as const;
 
 // Create a public client for the Base network
 const baseClient = createPublicClient({
@@ -433,12 +417,15 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 							reward.supplyRewardsAmount
 						);
 
+						console.log(
+							`  ${strategyAddress}  💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
+								reward.rewardToken
+							)} (≈ $${rewardsUsdFormatted} USD)`
+						);
+
 						// Parse the USD value to check against threshold
 						const rewardsUsdValue = parseFloat(rewardsUsdFormatted);
 						const exceedsThreshold = rewardsUsdValue >= minUsdValueThreshold;
-
-						// Log the results
-						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
 
 						if (exceedsThreshold) {
 							console.log(`    ✅ Rewards value ($${rewardsUsdFormatted}) exceeds threshold ($${minUsdValueThreshold})`);
@@ -461,12 +448,11 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 							});
 
 							// Wait for transaction receipt
-							const receipt = await baseClient.waitForTransactionReceipt({
+							await baseClient.waitForTransactionReceipt({
 								hash,
 							});
 
 							console.log(`    📝 Transaction hash: ${hash}`);
-							console.log(`    📝 Transaction receipt: ${JSON.stringify(receipt.status)}`);
 
 							//After claiming rewards, get the actual token balance and create a CoW Swap quote
 							try {
@@ -493,17 +479,13 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 									// Only get a quote if the balance exceeds the threshold
 									if (tokenBalanceUsdValue >= minUsdValueThreshold) {
-										console.log(`    🔄 Creating CoW Swap quote to swap claimed rewards to USDC...`);
-
 										// Get a CoW Swap quote for the claimed rewards using the actual token balance
 										const quoteResult = await getSwapQuote(strategyAddress, reward.rewardToken, tokenBalance, USDC);
 
 										// Extract order parameters from the quote response
 										const quoteParams = quoteResult.quote;
 
-										// Get the allowed slippage from the strategy contract
-										console.log(`🔍 Getting allowed slippage from strategy contract ${strategyAddress}...`);
-										let allowedSlippageInBps = 30n; // Default to 0.3% if we can't get it from the contract
+										let allowedSlippageInBps; // Default to 0.3% if we can't get it from the contract
 										try {
 											const slippageResult = await client.readContract({
 												address: strategyAddress,
@@ -512,15 +494,11 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 											});
 											// Ensure we have a valid bigint value
 											allowedSlippageInBps = BigInt(String(slippageResult));
-											// Ensure slippage is not greater than 10000 (100%)
-											if (allowedSlippageInBps > 10000n) {
-												console.warn(`⚠️ Slippage value ${allowedSlippageInBps} is too high, capping at 10000 (100%)`);
-												allowedSlippageInBps = 10000n;
-											}
+
 											console.log(`✅ Allowed slippage: ${allowedSlippageInBps} bps`);
 										} catch (error) {
 											console.error(`❌ Error getting allowed slippage from contract:`, error);
-											console.log(`⚠️ Using default slippage of ${allowedSlippageInBps} bps`);
+											continue;
 										}
 
 										// Get the expected output from the contract
@@ -575,7 +553,6 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 										console.log(`    🔐 Calling isValidSignature on strategy contract ${strategyAddress}...`);
 										const { encodedOrder, isValid } = await encodeOrderForSignature(orderParams, strategyAddress, client, rpcUrl);
 
-										console.log(`    📦 Encoded order data: ${encodedOrder}`);
 										console.log(`    ${isValid ? '✅ Signature is valid!' : '❌ Signature is invalid!'}`);
 
 										if (!isValid) {
@@ -607,8 +584,6 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 										console.log(JSON.stringify(orderCreation, null, 2));
 
-										// Send the order to CoW Swap using direct API call
-										console.log(`    🔄 Sending order to CoW Swap via direct API call...`);
 										try {
 											const orderUid = await cowSwapOrderBookApi.sendOrder(orderCreation);
 											console.log(`    ✅ Order successfully sent to CoW Swap`);
@@ -629,17 +604,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 							}
 						} else {
 							console.log(`    ⏳ Rewards value ($${rewardsUsdFormatted}) below threshold ($${minUsdValueThreshold}), skipping claim`);
-							console.log(
-								`    💡 To manually claim rewards, you would call claimReward(${strategyAddress}) on the UNITROLLER contract at ${UNITROLLER}`
-							);
 						}
-
-						console.log(
-							`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(
-								reward.rewardToken
-							)} (≈ $${rewardsUsdFormatted} USD)`
-						);
-						console.log(`    📈 Current ${getTokenSymbol(reward.rewardToken)} price: $${priceUsd} USD`);
 					} catch (error) {
 						console.log(`    🔄 Found ${getTokenSymbol(reward.rewardToken)} rewards for strategy ${strategy.strategy}`);
 						console.log(
