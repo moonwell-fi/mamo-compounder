@@ -298,7 +298,6 @@ async function encodeOrderForSignature(
 			args: [orderDigest as `0x${string}`, encodedOrder],
 		});
 
-		console.log(`✅ isValidSignature result (viem fallback): ${result}`);
 		const isValid = result.result === MAGIC_VALUE;
 		console.log(`${isValid ? '✅ Signature is valid!' : '❌ Signature is invalid!'}`);
 
@@ -317,7 +316,7 @@ async function encodeOrderForSignature(
 			}
 		}
 
-		console.error(`❌ Error calling isValidSignature with viem fallback:`, {
+		console.error(`❌ Error calling isValidSignature:`, {
 			error: error.message,
 			cause: error.cause?.message,
 			stack: error.stack,
@@ -402,7 +401,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 				const hasTokenPriceFeed = TOKEN_PRICE_FEEDS[reward.rewardToken.toLowerCase()] !== undefined;
 
 				if (hasRewards && hasTokenPriceFeed) {
-					console.log(`  Found ${TOKEN_SYMBOLS[reward.rewardToken.toLowerCase()]} rewards for strategy ${strategy.strategy}`);
+					console.log(`  Found ${TOKEN_SYMBOLS[reward.rewardToken.toLowerCase()]} rewards for strategy ${strategy.strategy}\n`);
 					try {
 						// Get the token price and calculate USD value
 						const { rewardsUsdFormatted } = await calculateTokenPriceInUsd(client, reward.rewardToken, reward.supplyRewardsAmount);
@@ -415,6 +414,9 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 
 						// Parse the USD value to check against threshold
 						const rewardsUsdValue = parseFloat(rewardsUsdFormatted);
+						console.log(`    💵 Rewards value: $${rewardsUsdFormatted} USD`);
+						console.log(`    💵 Threshold: $${minUsdValueThreshold} USD`);
+						console.log(`    💵 Exceeds threshold: ${rewardsUsdValue >= minUsdValueThreshold}`);
 						const exceedsThreshold = rewardsUsdValue >= minUsdValueThreshold;
 
 						if (exceedsThreshold) {
@@ -441,159 +443,155 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 							});
 
 							console.log(`    📝 Rewards claimed. Transaction hash: ${hash}`);
-
-							//After claiming rewards, get the actual token balance and create a CoW Swap quote
-							try {
-								// Get the actual token balance of the strategy
-								const tokenBalance = await client.readContract({
-									address: reward.rewardToken,
-									abi: ERC20_ABI,
-									functionName: 'balanceOf',
-									args: [strategyAddress],
-								});
-
-								console.log(`    💰 Actual token balance: ${tokenBalance.toString()} ${getTokenSymbol(reward.rewardToken)}`);
-
-								if (tokenBalance > 0n) {
-									// Calculate the USD value of the actual token balance
-									const { rewardsUsdFormatted } = await calculateTokenPriceInUsd(client, reward.rewardToken, tokenBalance);
-
-									// Parse the USD value to check against threshold
-									const tokenBalanceUsdValue = parseFloat(rewardsUsdFormatted);
-
-									console.log(`    💵 Token balance value: $${rewardsUsdFormatted} USD`);
-
-									// Only get a quote if the balance exceeds the threshold
-									if (tokenBalanceUsdValue >= minUsdValueThreshold) {
-										// Get a CoW Swap quote for the claimed rewards using the actual token balance
-										const quoteResult = await getSwapQuote(strategyAddress, reward.rewardToken, tokenBalance, USDC);
-
-										// Extract order parameters from the quote response
-										const quoteParams = quoteResult.quote;
-
-										let allowedSlippageInBps; // Default to 0.3% if we can't get it from the contract
-										try {
-											const slippageResult = await client.readContract({
-												address: strategyAddress,
-												abi: STRATEGY_ABI,
-												functionName: 'allowedSlippageInBps',
-											});
-											// Ensure we have a valid bigint value
-											allowedSlippageInBps = BigInt(String(slippageResult));
-
-											console.log(`✅ Allowed slippage: ${allowedSlippageInBps} bps`);
-										} catch (error) {
-											console.error(`❌ Error getting allowed slippage from contract:`, error);
-											continue;
-										}
-
-										// Get the expected output from the contract
-										const expectedOut = await client.readContract({
-											address: CHAINLINK_SWAP_CHECKER_PROXY,
-											abi: CHAINLINK_SWAP_CHECKER_ABI,
-											functionName: 'getExpectedOut',
-											args: [BigInt(quoteParams.sellAmount), quoteParams.sellToken, quoteParams.buyToken],
-										});
-
-										// Calculate minimum output with slippage
-										const minOut = (BigInt(expectedOut.toString()) * (10000n - allowedSlippageInBps)) / 10000n;
-
-										console.log(`📊 Expected output from Chainlink: ${expectedOut.toString()}`);
-										console.log(`📊 Minimum output after slippage: ${minOut.toString()}`);
-
-										// Create the order struct that matches the contract's expectations
-										const validTo: number = Math.floor(Date.now() / 1000) + 1800; // 30 minutes from now
-
-										// Calculate sell amount and ensure it's not negative
-										const sellAmountBigInt = BigInt(quoteParams.sellAmount);
-										const feeAmountBigInt = quoteParams.feeAmount ? BigInt(quoteParams.feeAmount) : 0n;
-
-										// Ensure fee doesn't exceed sell amount to avoid negative values
-										const sellAmount = feeAmountBigInt >= sellAmountBigInt ? '0' : (sellAmountBigInt - feeAmountBigInt).toString();
-
-										// Map between different token balance types
-										const sellTokenBalanceForCreation = SellTokenSource.ERC20; // For OrderCreation
-										const buyTokenBalanceForCreation = BuyTokenDestination.ERC20; // For OrderCreation
-										const sellTokenBalanceForOrder = OrderBalance.ERC20; // For Order
-										const buyTokenBalanceForOrder = OrderBalance.ERC20; // For Order
-
-										// Create order parameters for the CoW Protocol contract
-										const orderParams: Order = {
-											sellToken: quoteParams.sellToken as `0x${string}`,
-											buyToken: quoteParams.buyToken as `0x${string}`,
-											receiver: quoteParams.receiver as `0x${string}`,
-											sellAmount: sellAmount,
-											buyAmount: minOut.toString(),
-											validTo: validTo,
-											appData: APP_DATA,
-											feeAmount: '0',
-											kind: OrderKind.SELL,
-											partiallyFillable: false,
-											sellTokenBalance: sellTokenBalanceForOrder,
-											buyTokenBalance: buyTokenBalanceForOrder,
-										};
-
-										// Log the order parameters for debugging
-										console.log(`    📋 Order parameters: ${JSON.stringify(orderParams, null, 2)}`);
-										// Encode the order parameters for EIP-1271 signature and validate with the strategy contract
-										console.log(`    🔐 Calling isValidSignature on strategy contract ${strategyAddress}...`);
-										const { encodedOrder, isValid } = await encodeOrderForSignature(orderParams, strategyAddress, client, rpcUrl);
-
-										console.log(`    ${isValid ? '✅ Signature is valid!' : '❌ Signature is invalid!'}`);
-
-										if (!isValid) {
-											console.error(`    ❌ Order signature validation failed. Cannot proceed with sending order.`);
-											continue;
-										}
-
-										// Create the order creation object
-										// For EIP-1271 signatures, we need to provide the encoded order as the signature
-										// This is because the CoW API will call isValidSignature(orderDigest, signature)
-										// where signature is expected to be the encoded order
-										const orderCreation: OrderCreation = {
-											sellToken: orderParams.sellToken,
-											buyToken: orderParams.buyToken,
-											receiver: orderParams.receiver,
-											sellAmount: orderParams.sellAmount.toString(),
-											buyAmount: orderParams.buyAmount.toString(),
-											validTo: orderParams.validTo as number,
-											appData: orderParams.appData as `0x${string}`,
-											feeAmount: orderParams.feeAmount.toString(),
-											kind: orderParams.kind,
-											partiallyFillable: orderParams.partiallyFillable,
-											sellTokenBalance: sellTokenBalanceForCreation,
-											buyTokenBalance: buyTokenBalanceForCreation,
-											signingScheme: SigningScheme.EIP1271,
-											signature: encodedOrder, // Use the encoded order as the signature
-											from: strategyAddress,
-										};
-
-										console.log(JSON.stringify(orderCreation, null, 2));
-
-										try {
-											const orderUid = await cowSwapOrderBookApi.sendOrder(orderCreation);
-											console.log(`    ✅ Order successfully sent to CoW Swap`);
-											console.log(`    📝 Order UID: ${orderUid}`);
-										} catch (sendOrderError) {
-											console.error(`    ❌ Error sending order to CoW Swap:`, sendOrderError);
-										}
-									} else {
-										console.log(
-											`    ⏳ Token balance value ($${rewardsUsdFormatted}) below threshold ($${minUsdValueThreshold}), skipping CoW Swap quote`
-										);
-									}
-								} else {
-									console.log(`    ⚠️ No token balance found after claiming rewards, skipping CoW Swap quote`);
-								}
-							} catch (cowError) {
-								console.error(`    ❌ `, cowError);
-							}
 						} else {
 							console.log(`    ⏳ Rewards value ($${rewardsUsdFormatted}) below threshold ($${minUsdValueThreshold}), skipping claim`);
 						}
+
+						// Get the actual token balance of the strategy
+						const tokenBalance = await client.readContract({
+							address: reward.rewardToken,
+							abi: ERC20_ABI,
+							functionName: 'balanceOf',
+							args: [strategyAddress],
+						});
+
+						console.log(`    💰 Actual token balance: ${tokenBalance.toString()} ${getTokenSymbol(reward.rewardToken)}`);
+
+						if (tokenBalance > 0n) {
+							// Calculate the USD value of the actual token balance
+							const { rewardsUsdFormatted } = await calculateTokenPriceInUsd(client, reward.rewardToken, tokenBalance);
+
+							// Parse the USD value to check against threshold
+							const tokenBalanceUsdValue = parseFloat(rewardsUsdFormatted);
+
+							console.log(`    💵 Min USD value threshold: $${minUsdValueThreshold} USD`);
+							console.log(`    💵 Token balance USD value: $${tokenBalanceUsdValue} USD`);
+
+							// Only get a quote if the balance exceeds the threshold
+							if (tokenBalanceUsdValue >= minUsdValueThreshold) {
+								// Get a CoW Swap quote for the claimed rewards using the actual token balance
+								const { quote: quoteParams } = await getSwapQuote(strategyAddress, reward.rewardToken, tokenBalance, USDC);
+
+								let allowedSlippageInBps; // Default to 0.3% if we can't get it from the contract
+								try {
+									const slippageResult = await client.readContract({
+										address: strategyAddress,
+										abi: STRATEGY_ABI,
+										functionName: 'allowedSlippageInBps',
+									});
+									// Ensure we have a valid bigint value
+									allowedSlippageInBps = BigInt(String(slippageResult));
+
+									console.log(`✅ Allowed slippage: ${allowedSlippageInBps} bps`);
+								} catch (error) {
+									console.error(`❌ Error getting allowed slippage from contract:`, error);
+									continue;
+								}
+
+								// Get the expected output from the contract
+								const expectedOut = await client.readContract({
+									address: CHAINLINK_SWAP_CHECKER_PROXY,
+									abi: CHAINLINK_SWAP_CHECKER_ABI,
+									functionName: 'getExpectedOut',
+									args: [BigInt(quoteParams.sellAmount), quoteParams.sellToken, quoteParams.buyToken],
+								});
+
+								// Calculate minimum output with slippage
+								const minOut = (BigInt(expectedOut.toString()) * (10000n - allowedSlippageInBps)) / 10000n;
+
+								console.log(`📊 Expected output from Chainlink: ${expectedOut.toString()}`);
+								console.log(`📊 Minimum output after slippage: ${minOut.toString()}`);
+
+								// Create the order struct that matches the contract's expectations
+								const validTo: number = Math.floor(Date.now() / 1000) + 1800; // 30 minutes from now
+
+								// Calculate sell amount and ensure it's not negative
+								const sellAmountBigInt = BigInt(quoteParams.sellAmount);
+								const feeAmountBigInt = quoteParams.feeAmount ? BigInt(quoteParams.feeAmount) : 0n;
+
+								if (feeAmountBigInt >= sellAmountBigInt) {
+									console.error(`❌ Fee amount (${feeAmountBigInt.toString()}) exceeds sell amount (${sellAmountBigInt.toString()})`);
+									continue;
+								}
+
+								// Ensure fee doesn't exceed sell amount to avoid negative values
+								const sellAmount = (sellAmountBigInt - feeAmountBigInt).toString();
+								console.log(`    💰 Sell amount: ${sellAmount}`);
+
+								// Map between different token balance types
+								const sellTokenBalanceForCreation = SellTokenSource.ERC20; // For OrderCreation
+								const buyTokenBalanceForCreation = BuyTokenDestination.ERC20; // For OrderCreation
+								const sellTokenBalanceForOrder = OrderBalance.ERC20; // For Order
+								const buyTokenBalanceForOrder = OrderBalance.ERC20; // For Order
+
+								// Create order parameters for the CoW Protocol contract
+								const orderParams: Order = {
+									sellToken: quoteParams.sellToken as `0x${string}`,
+									buyToken: quoteParams.buyToken as `0x${string}`,
+									receiver: quoteParams.receiver as `0x${string}`,
+									sellAmount: sellAmount,
+									buyAmount: minOut.toString(),
+									validTo: validTo,
+									appData: APP_DATA,
+									feeAmount: '0',
+									kind: OrderKind.SELL,
+									partiallyFillable: false,
+									sellTokenBalance: sellTokenBalanceForOrder,
+									buyTokenBalance: buyTokenBalanceForOrder,
+								};
+
+								// Log the order parameters for debugging
+								console.log(`    📋 Order parameters: ${JSON.stringify(orderParams, null, 2)}`);
+								// Encode the order parameters for EIP-1271 signature and validate with the strategy contract
+								console.log(`    🔐 Calling isValidSignature on strategy contract ${strategyAddress}...`);
+								const { encodedOrder, isValid } = await encodeOrderForSignature(orderParams, strategyAddress, client, rpcUrl);
+
+								console.log(`    ${isValid ? '✅ Signature is valid!' : '❌ Signature is invalid!'}`);
+
+								if (!isValid) {
+									console.error(`    ❌ Order signature validation failed. Cannot proceed with sending order.`);
+									continue;
+								}
+
+								// Create the order creation object
+								// For EIP-1271 signatures, we need to provide the encoded order as the signature
+								// This is because the CoW API will call isValidSignature(orderDigest, signature)
+								// where signature is expected to be the encoded order
+								const orderCreation: OrderCreation = {
+									sellToken: orderParams.sellToken,
+									buyToken: orderParams.buyToken,
+									receiver: orderParams.receiver,
+									sellAmount: orderParams.sellAmount.toString(),
+									buyAmount: orderParams.buyAmount.toString(),
+									validTo: orderParams.validTo as number,
+									appData: orderParams.appData as `0x${string}`,
+									feeAmount: orderParams.feeAmount.toString(),
+									kind: orderParams.kind,
+									partiallyFillable: orderParams.partiallyFillable,
+									sellTokenBalance: sellTokenBalanceForCreation,
+									buyTokenBalance: buyTokenBalanceForCreation,
+									signingScheme: SigningScheme.EIP1271,
+									signature: encodedOrder, // Use the encoded order as the signature
+									from: strategyAddress,
+								};
+
+								console.log(JSON.stringify(orderCreation, null, 2));
+
+								try {
+									const orderUid = await cowSwapOrderBookApi.sendOrder(orderCreation);
+									console.log(`    ✅ Order successfully sent to CoW Swap`);
+									console.log(`    📝 Order UID: ${orderUid}`);
+								} catch (sendOrderError) {
+									console.error(`    ❌ Error sending order to CoW Swap:`, sendOrderError);
+								}
+							} else {
+								console.log(
+									`    ⏳ Token balance value ($${rewardsUsdFormatted}) below threshold ($${minUsdValueThreshold}), skipping CoW Swap quote`
+								);
+							}
+						}
 					} catch (error) {
-						console.log(`    💰 Supply Rewards: ${reward.supplyRewardsAmount.toString()} ${getTokenSymbol(reward.rewardToken)}`);
-						console.error(`    ❌ Error fetching ${getTokenSymbol(reward.rewardToken)} price:`, error);
+						console.error(`    ❌ Error processing rewards:`, error);
 					}
 				}
 			}
