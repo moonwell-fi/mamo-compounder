@@ -382,6 +382,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 			// Call the getUserRewards function for this strategy
 			// Convert the strategy address to a proper 0x-prefixed address
 			const strategyAddress = strategy.strategy as `0x${string}`;
+			console.log(`    🔍 Strategy address: ${strategyAddress}`);
 
 			// Call the contract
 			const rewards = (await client.readContract({
@@ -390,6 +391,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 				functionName: 'getUserRewards',
 				args: [strategyAddress],
 			})) as Rewards[];
+
 
 			// Process each reward
 			for (let i = 0; i < rewards.length; i++) {

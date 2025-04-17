@@ -29,10 +29,10 @@
 	 */
 	"vars": {
 		"BASE_RPC_URL": "https://rpc.moonwell.fi/main/evm/8453",
-		"MIN_USD_VALUE_THRESHOLD": "1"
+		"MIN_USD_VALUE_THRESHOLD": "5"
 	},
 	"triggers": {
-		"crons": ["*/5 * * * * "]
+		"crons": ["* * * * * "]
 	}
 	/**
 	 * Note: Use secrets to store sensitive data.
