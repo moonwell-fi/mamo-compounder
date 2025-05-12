@@ -48,7 +48,6 @@ export const TOKEN_SYMBOLS: Record<string, string> = {
 };
 
 // Other constants
-export const APP_DATA = '0x0000000000000000000000000000000000000000000000000000000000000000';
 export const ERC20_BALANCE = '0x5a28e9363bb942b639270062aa6bb295f434bcdfc42c97267bf003f272060dc9';
 export const KIND_SELL = '0xf3b277728b3fee749481eb3e0b3b48980dbbab78658fc419025cb16eee346775';
 export const MAGIC_VALUE = '0x1626ba7e';
