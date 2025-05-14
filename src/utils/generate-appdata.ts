@@ -1,127 +1,53 @@
 import { MetadataApi } from '@cowprotocol/app-data';
 import { generateAppDataFromDoc } from '@cowprotocol/cow-sdk';
-import { keccak256, toHex } from 'viem';
-
-// Define a type for the app data document returned by the API
-type AppDataDocument = any; // Using 'any' for now since we don't know the exact structure
+import { FEE_RECIPIENT } from '../constants';
 
 export const metadataApi = new MetadataApi();
 
 /**
- * Generate a hash from an object
- * @param obj The object to hash
- * @returns The hash as a hex string
- */
-function generateHash(jsonStr: string): string {
-	// Convert the string to bytes
-	const bytes = new TextEncoder().encode(jsonStr);
-	// Hash the bytes using keccak256
-	const hash = keccak256(bytes);
-	// Return the hash as a hex string
-	return hash;
-}
-
-/**
- * Generate the exact appData JSON string that the contract expects
- * @param callData The callData for the pre-hook
- * @param gasLimit The gas limit for the pre-hook
- * @param target The target address for the pre-hook
- * @returns The appData JSON string
- */
-function generateExactAppDataJson(callData: string, gasLimit: string, target: string): string {
-	// Ensure target is lowercase to match contract expectations
-	const targetLower = target.toLowerCase();
-
-	// Format exactly as the contract expects
-	return `{"appCode":"Mamo","metadata":{"hooks":{"pre":[{"callData":"${callData}","gasLimit":"${gasLimit}","target":"${targetLower}"}],"version":"0.1.0"}},"version":"1.3.0"}`;
-}
-
-/**
  * Generates appData for Mamo strategy orders
  * @param sellToken The address of the token being sold
- * @param feeRecipient The address that will receive the fee
+ * @param feeRecipient The address that will receive the fee (this parameter is ignored, using FEE_RECIPIENT constant instead)
  * @param feeAmount The amount of fee to be taken (as a string)
  * @param hookGasLimit The gas limit for the pre-hook
  * @param from The address from which the transfer is made
  * @returns The generated appData document
  */
-export async function generateMamoAppData(
-	sellToken: string,
-	feeRecipient: string,
-	feeAmount: string,
-	hookGasLimit: number,
-	from: string
-): Promise<AppDataDocument> {
-	try {
-		// Validate inputs
-		if (!sellToken || !feeRecipient || !from) {
-			throw new Error('Missing required parameters for generateMamoAppData');
-		}
+export async function generateMamoAppData(sellToken: string, feeAmount: string, hookGasLimit: number, from: string): Promise<string> {
+	// Create the hooks metadata
+	const hooks = {
+		pre: [
+			{
+				// Create a placeholder for the callData that matches the format expected by the contract
+				// Use FEE_RECIPIENT constant instead of the feeRecipient parameter
+				callData: createTransferFromCalldata(from, FEE_RECIPIENT, feeAmount),
+				gasLimit: hookGasLimit.toString(),
+				target: sellToken.toLowerCase(),
+			},
+		],
+		version: '0.1.0',
+	};
 
-		// Create the transferFrom calldata for the pre-hook
-		// IERC20.transferFrom selector is 0x23b872dd
-		// We need to encode: transferFrom(from, feeRecipient, feeAmount)
+	// Use the MetadataApi to generate the appData document in the format CoW Swap expects
+	// Register the appData with CoW Swap's API
+	const appDataDoc = await metadataApi.generateAppDataDoc({
+		appCode: 'Mamo',
+		metadata: {
+			hooks,
+		},
+	});
 
-		// Create the hooks metadata
-		const hooks = {
-			pre: [
-				{
-					// Create a placeholder for the callData that matches the format expected by the contract
-					callData: createTransferFromCalldata(from, feeRecipient, feeAmount),
-					gasLimit: hookGasLimit.toString(),
-					target: sellToken.toLowerCase(),
-				},
-			],
-			version: '0.1.0',
-		};
+	// generate app data
+	const appData = await generateAppDataFromDoc(appDataDoc);
+	console.log('Generated appData:', appData);
 
-		// Create the hooks metadata
-		const callData = createTransferFromCalldata(from, feeRecipient, feeAmount);
-		const gasLimitStr = hookGasLimit.toString();
-
-		// Use the MetadataApi to generate the appData document in the format CoW Swap expects
-		try {
-			// Register the appData with CoW Swap's API
-			const appDataDoc = await metadataApi.generateAppDataDoc({
-				appCode: 'Mamo',
-				metadata: {
-					hooks,
-				},
-				version: '1.3.0',
-			});
-
-			// generate app data
-			const appData = await generateAppDataFromDoc(appDataDoc);
-			console.log('Generated appData:', appData);
-
-			return appData.appDataKeccak256;
-		} catch (error) {
-			console.error('Error registering appData with CoW Swap:', error);
-
-			// If registration fails, return a default document
-			return {
-				appCode: 'Mamo',
-				appDataHash: '0x0000000000000000000000000000000000000000000000000000000000000000',
-				metadata: { hooks },
-				version: '1.3.0',
-			};
-		}
-	} catch (error) {
-		console.error('Error generating Mamo appData:', error);
-		// Return a default appData document with a valid hash format to prevent crashes
-		return {
-			appCode: 'Mamo',
-			appDataHash: '0x0000000000000000000000000000000000000000000000000000000000000000',
-			metadata: { hooks: {} },
-			version: '1.0.0',
-		};
-	}
+	return appData.appDataKeccak256;
 }
 
 /**
  * Creates a transferFrom calldata string
  * @param from The address from which the transfer is made
- * @param recipient The recipient address
+ * @param recipient The address that will receive the fee
  * @param feeAmount The amount to transfer as fee
  * @returns The calldata as a hex string
  */
@@ -138,6 +64,8 @@ function createTransferFromCalldata(from: string, recipient: string, feeAmount: 
 
 	// Combine the parts
 	const calldata = '0x23b872dd' + paddedFrom + paddedTo + paddedAmount;
+
+	console.log('Generated calldata:', calldata);
 
 	return calldata;
 }
@@ -176,5 +104,3 @@ function padUint256(value: string): string {
 export function calculateFeeAmount(sellAmount: string, compoundFeeBps: number): string {
 	return ((BigInt(sellAmount) * BigInt(compoundFeeBps)) / BigInt(10000)).toString();
 }
-
-// This file is now compatible with Cloudflare Workers environment
