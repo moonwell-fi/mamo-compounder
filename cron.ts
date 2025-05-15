@@ -648,7 +648,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 								sellAmount: orderParams.sellAmount.toString(),
 								buyAmount: orderParams.buyAmount.toString(),
 								validTo: orderParams.validTo as number,
-								appData: appData.appDataKeccak256,
+								appData: appData.fullAppData,
 								feeAmount: orderParams.feeAmount.toString(),
 								kind: orderParams.kind,
 								partiallyFillable: orderParams.partiallyFillable,
