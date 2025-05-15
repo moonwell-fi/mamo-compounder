@@ -25,7 +25,7 @@ npm run deploy
 
 ### Railway (Docker Deployment)
 
-The project can also be deployed to Railway using Docker for consistent builds and easy deployment.
+The project can also be deployed to Railway using Docker for consistent builds and easy deployment with Railway's built-in cron job system.
 
 #### Docker Deployment Steps
 
@@ -46,12 +46,15 @@ The project can also be deployed to Railway using Docker for consistent builds a
      - `BASE_RPC_URL`: Base network RPC URL
      - `PRIVATE_KEY`: Private key for transaction signing
      - `MIN_USD_VALUE_THRESHOLD`: Minimum USD value threshold for claiming rewards
-     - `CRON_SCHEDULE`: Cron schedule for running the compounder job (default: `*/15 * * * *`)
-     - `PORT`: Port for the web server (default: `3000`)
 
-5. **Deploy**
+5. **Configure the cron schedule**
+   - Go to the Settings tab in your Railway project
+   - Under "Cron", set your desired schedule (e.g., `*/15 * * * *` for every 15 minutes)
+   - Railway will automatically run the container on this schedule
+
+6. **Deploy**
    - Railway will automatically build and deploy your Docker container
-   - You can monitor the deployment in the Railway dashboard
+   - The container will run on the specified schedule, execute the task, and then exit
 
 ## Local Development
 
@@ -70,20 +73,25 @@ npm install
 npm run dev
 ```
 
-### For Docker (Railway)
+### For Railway Cron Job
+
+```bash
+# Install dependencies
+npm install
+
+# Run the cron job script directly
+npm start
+```
+
+### For Docker
 
 ```bash
 # Build the Docker image
 docker build -t mamo-compounder .
 
 # Run the Docker container
-docker run -p 3000:3000 --env-file .env.railway mamo-compounder
+docker run --env-file .env.railway mamo-compounder
 ```
-
-## API Endpoints
-
-- `GET /`: Health check endpoint
-- `POST /trigger-job`: Manually trigger the compounder job
 
 ## Environment Variables
 
@@ -92,22 +100,32 @@ docker run -p 3000:3000 --env-file .env.railway mamo-compounder
 | `BASE_RPC_URL` | Base network RPC URL | Required |
 | `PRIVATE_KEY` | Private key for transaction signing | Required |
 | `MIN_USD_VALUE_THRESHOLD` | Minimum USD value threshold for claiming rewards | Required |
-| `CRON_SCHEDULE` | Cron schedule for running the compounder job | `*/15 * * * *` (every 15 minutes) |
-| `PORT` | Port for the web server | `3000` |
 
 ## Architecture
 
 The project uses a dual architecture approach:
 
 1. **Cloudflare Workers**: The original implementation using Cloudflare's scheduled triggers
-2. **Docker Container**: A containerized Express server that provides API endpoints and uses node-cron for scheduling
+2. **Railway Cron Job**: A containerized script that runs on a schedule, executes the task, and then exits
 
 This allows the same core logic to be deployed to either platform with minimal changes.
 
+## How Railway Cron Jobs Work
+
+Railway's cron job system:
+
+1. Executes the container's start command on the specified schedule
+2. Expects the process to complete its task and exit
+3. Automatically handles scheduling without requiring a persistent server
+4. Skips new executions if a previous job is still running
+
+This approach is more efficient than running a persistent server with a scheduling library, as it only consumes resources when the job is actually running.
+
 ## Troubleshooting
 
-If you encounter issues with the Docker deployment:
+If you encounter issues with the Railway deployment:
 
 1. Check the Railway logs for specific error messages
 2. Verify that all required environment variables are set correctly
 3. Make sure your private key has sufficient funds for transactions
+4. Ensure the cron job is properly configured in the Railway dashboard
