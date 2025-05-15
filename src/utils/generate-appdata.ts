@@ -46,7 +46,7 @@ export async function generateMamoAppData(sellToken: string, feeAmount: string, 
 	const appData = await generateAppDataFromDoc(appDataDoc);
 	console.log('Generated appData:', appData);
 
-	return appData.appDataKeccak256;
+	return appData.fullAppData;
 }
 
 /**
