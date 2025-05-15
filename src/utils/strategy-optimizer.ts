@@ -240,9 +240,7 @@ export async function processStrategyOptimization(
 					`✅ Updated position for strategy ${strategyAddress} to ${bestSplit.mToken}/${bestSplit.vault} with APY ${apyData.bestAPY}%`
 				);
 			} else {
-				// Just update the APY in the database
-				await updatePosition(updatedPosition);
-
+				// Don't update the database if we don't update the position
 				if (!apyImproved) {
 					console.log(
 						`ℹ️ APY improvement (${apyImprovement.toFixed(2)}%) is below threshold (${minImprovementThreshold}%), skipping position update`
@@ -253,7 +251,7 @@ export async function processStrategyOptimization(
 					);
 				}
 
-				console.log(`✅ Updated APY for strategy ${strategyAddress} to ${apyData.bestAPY}%`);
+				console.log(`ℹ️ No changes made to strategy ${strategyAddress} or database`);
 			}
 		}
 	} catch (error) {
