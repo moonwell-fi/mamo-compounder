@@ -1,35 +1,27 @@
 {
 	"name": "mamo-compounder",
-	"version": "0.0.0",
-	"private": true,
+	"version": "1.0.0",
+	"description": "MAMO Compounder Server with Periodic Tasks",
+	"main": "src/index.ts",
 	"scripts": {
-		"dev": "wrangler dev --test-scheduled --port 5656",
-		"deploy": "wrangler deploy",
-		"start": "ts-node cron.ts",
-		"server": "ts-node server.ts",
-		"docker:build": "docker build -t mamo-compounder .",
-		"docker:run": "docker run --env-file .env.railway mamo-compounder",
-		"test": "vitest"
-	},
-	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.8.28",
-		"@cloudflare/workers-types": "^4.20250408.0",
-		"@railway/cli": "^3.23.0",
-		"@types/express": "^4.17.21",
-		"@types/node": "^20.17.47",
-		"ts-node": "^10.9.2",
-		"typescript": "^5.5.2",
-		"vitest": "~3.0.7",
-		"wrangler": "^4.9.1"
+		"build": "tsc",
+		"start": "node dist/index.js",
+		"dev": "ts-node src/index.ts"
 	},
 	"dependencies": {
 		"@cowprotocol/app-data": "^3.0.0",
 		"@cowprotocol/contracts": "^1.7.0",
 		"@cowprotocol/cow-sdk": "^5.10.2",
+		"dotenv": "^16.3.1",
 		"express": "^4.18.2",
-		"viem": "^2.29.2"
+		"uuid": "^9.0.1",
+		"viem": "^1.19.11"
 	},
-	"engines": {
-		"node": ">=18.0.0"
+	"devDependencies": {
+		"@types/express": "^4.17.21",
+		"@types/node": "^20.10.0",
+		"@types/uuid": "^9.0.7",
+		"ts-node": "^10.9.1",
+		"typescript": "^5.3.2"
 	}
 }

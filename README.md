@@ -1,131 +1,74 @@
-# Mamo Compounder
+# MAMO Compounder
 
-A service that monitors and compounds rewards for Mamo strategies on the Base network.
+This project handles the compounding of rewards for MAMO strategies.
 
-## Project Overview
+#### Server-based Implementation
 
-This project is a TypeScript application that:
+- Runs as a long-lived server process
+- Uses internal scheduling to run tasks periodically
+- Provides health check and status endpoints
+- Continues running after task completion
+- Better error handling and recovery
+- Can be monitored and scaled more easily
 
-1. Fetches strategies from the Mamo indexer
-2. Checks for available rewards for each strategy
-3. Claims rewards when they exceed a configured threshold
-4. Optionally swaps tokens using CoW Swap
+### How to Run
 
-## Deployment Options
-
-### Cloudflare Workers (Original)
-
-The project was originally designed to run on Cloudflare Workers with scheduled triggers.
-
-To deploy to Cloudflare Workers:
+#### Install Dependencies
 
 ```bash
-npm run deploy
+npm install
 ```
 
-### Railway (Docker Deployment)
-
-The project can also be deployed to Railway using Docker for consistent builds and easy deployment with Railway's built-in cron job system.
-
-#### Docker Deployment Steps
-
-1. **Fork or clone this repository**
-
-2. **Create a new project on Railway**
-   - Go to [Railway Dashboard](https://railway.app/dashboard)
-   - Click "New Project" and select "Deploy from GitHub repo"
-   - Connect your GitHub repository
-
-3. **Configure the deployment**
-   - Railway will automatically detect the Dockerfile
-   - Select "Docker" as the deployment method
-
-4. **Set required environment variables**
-   - Go to the Variables tab in your Railway project
-   - Add the following variables:
-     - `BASE_RPC_URL`: Base network RPC URL
-     - `PRIVATE_KEY`: Private key for transaction signing
-     - `MIN_USD_VALUE_THRESHOLD`: Minimum USD value threshold for claiming rewards
-
-5. **Configure the cron schedule**
-   - Go to the Settings tab in your Railway project
-   - Under "Cron", set your desired schedule (e.g., `*/15 * * * *` for every 15 minutes)
-   - Railway will automatically run the container on this schedule
-
-6. **Deploy**
-   - Railway will automatically build and deploy your Docker container
-   - The container will run on the specified schedule, execute the task, and then exit
-
-## Local Development
-
-### Prerequisites
-
-- Node.js 18 or later
-- npm
-
-### For Cloudflare Workers
+#### Run the Server
 
 ```bash
-# Install dependencies
-npm install
-
-# Start development server
 npm run dev
 ```
 
-### For Railway Cron Job
+This will start the server on port 3000 (or the port specified in the PORT environment variable).
 
-```bash
-# Install dependencies
-npm install
+### API Endpoints
 
-# Run the cron job script directly
-npm start
+- `/health` - Returns the server health status
+- `/status` - Returns the status of all registered periodic tasks
+
+### Environment Variables
+
+- `PORT` - The port to run the server on (default: 3000)
+- `BASE_RPC_URL` - The RPC URL for the Base network
+- `PRIVATE_KEY` - The private key for the wallet that will execute transactions
+- `MIN_USD_VALUE_THRESHOLD` - The minimum USD value threshold for processing rewards
+
+### Periodic Task Implementation
+
+The server uses a simple periodic task scheduler that runs tasks at specified intervals:
+
+```typescript
+// Define a periodic task
+periodic({
+  interval: 1000 * 60 * 5, // 5 minutes
+  fn: processRewards,
+  prefix: '[MAMO Compounder]'
+});
 ```
 
-### For Docker
+This registers a task to run the `processRewards` function every 5 minutes.
 
-```bash
-# Build the Docker image
-docker build -t mamo-compounder .
+### Benefits of the Server Approach
 
-# Run the Docker container
-docker run --env-file .env.railway mamo-compounder
-```
+1. **Reliability**: The server continues running even if individual tasks fail
+2. **Monitoring**: Health check and status endpoints make it easier to monitor
+3. **Flexibility**: Tasks can be dynamically registered and managed
+4. **Resource Efficiency**: A single process handles multiple scheduled tasks
+5. **Simplified Deployment**: No need for external scheduling tools
 
-## Environment Variables
+### Implementation Notes
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `BASE_RPC_URL` | Base network RPC URL | Required |
-| `PRIVATE_KEY` | Private key for transaction signing | Required |
-| `MIN_USD_VALUE_THRESHOLD` | Minimum USD value threshold for claiming rewards | Required |
+The server implementation maintains the same core business logic as the cron implementation, but wraps it in a more robust and maintainable structure. The key components are:
 
-## Architecture
+1. **Express Server**: Provides HTTP endpoints for health checks and status
+2. **Task Scheduler**: Manages the execution of periodic tasks
+3. **Periodic Task Registry**: Stores and tracks registered tasks
+4. **Error Handling**: Improved error handling to prevent process crashes
 
-The project uses a dual architecture approach:
-
-1. **Cloudflare Workers**: The original implementation using Cloudflare's scheduled triggers
-2. **Railway Cron Job**: A containerized script that runs on a schedule, executes the task, and then exits
-
-This allows the same core logic to be deployed to either platform with minimal changes.
-
-## How Railway Cron Jobs Work
-
-Railway's cron job system:
-
-1. Executes the container's start command on the specified schedule
-2. Expects the process to complete its task and exit
-3. Automatically handles scheduling without requiring a persistent server
-4. Skips new executions if a previous job is still running
-
-This approach is more efficient than running a persistent server with a scheduling library, as it only consumes resources when the job is actually running.
-
-## Troubleshooting
-
-If you encounter issues with the Railway deployment:
-
-1. Check the Railway logs for specific error messages
-2. Verify that all required environment variables are set correctly
-3. Make sure your private key has sufficient funds for transactions
-4. Ensure the cron job is properly configured in the Railway dashboard
+This approach is more suitable for production environments and provides better observability and reliability.

@@ -42,11 +42,6 @@ export async function generateMamoAppData(
 		},
 	});
 
-	const { appDataContent, appDataHex, cid } = await metadataApi.getAppDataInfo(appDataDoc);
-
-	// The app-data hex string (app-data part of the order struct)
-	console.log(appDataHex);
-
 	// generate app data
 	const appData = await generateAppDataFromDoc(appDataDoc);
 	console.log('Generated appData:', appData);
