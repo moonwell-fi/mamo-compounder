@@ -147,41 +147,46 @@ export async function processStrategyOptimization(
 			const currentSplit = await getCurrentSplit(client, strategyAddress);
 
 			// Insert the position into the database
+			// Determine the best split based on the APY data
+			const bestSplit = determineBestSplit(apyData.marketAPY, apyData.vaultAPY);
+
+			// Check if the current split matches the best split
+			const currentSplitMatchesBest = currentSplit.mToken === bestSplit.mToken && currentSplit.vault === bestSplit.vault;
+
+			console.log(`ℹ️ Current split: ${currentSplit.mToken}/${currentSplit.vault}`);
+			console.log(`ℹ️ Best split: ${bestSplit.mToken}/${bestSplit.vault}`);
+			console.log(`ℹ️ Current split matches best: ${currentSplitMatchesBest ? 'Yes' : 'No'}`);
+
+			// Create the initial position record
 			const newPosition: Position = {
 				strategy_address: strategyAddress,
 				split_mtoken: currentSplit.mToken,
 				split_vault: currentSplit.vault,
 				strategy_type: 'usdc_stablecoin', // Default type as specified
 				last_updated: new Date(),
-				apy: Math.max(apyData.marketAPY, apyData.vaultAPY), // Store the best APY
+				apy: apyData.bestAPY, // Store the best APY
 			};
 
-			await insertPosition(newPosition);
-			console.log(`✅ Inserted new position for strategy ${strategyAddress}`);
-
-			// Check if the current split matches the best split
-			const bestSplit = determineBestSplit(apyData.marketAPY, apyData.vaultAPY);
-
-			if (currentSplit.mToken !== bestSplit.mToken || currentSplit.vault !== bestSplit.vault) {
-				console.log(
-					`ℹ️ Current split (${currentSplit.mToken}/${currentSplit.vault}) doesn't match best split (${bestSplit.mToken}/${bestSplit.vault})`
-				);
+			// Only update the position if the current split doesn't match the best split
+			if (!currentSplitMatchesBest) {
+				console.log(`ℹ️ Current split needs to be updated to the optimal split`);
 
 				// Update the position in the contract
 				await updateStrategyPosition(rpcUrl, privateKey, strategyAddress, bestSplit.mToken, bestSplit.vault);
 
-				// Update the position in the database
-				const updatedPosition: Position = {
-					...newPosition,
-					split_mtoken: bestSplit.mToken,
-					split_vault: bestSplit.vault,
-					last_updated: new Date(),
-				};
+				// Update the split in the new position record
+				newPosition.split_mtoken = bestSplit.mToken;
+				newPosition.split_vault = bestSplit.vault;
 
-				await updatePosition(updatedPosition);
-				console.log(`✅ Updated position for strategy ${strategyAddress} to ${bestSplit.mToken}/${bestSplit.vault}`);
+				// Insert the position with the updated split
+				await insertPosition(newPosition);
+				console.log(`✅ Inserted new position for strategy ${strategyAddress} with optimal split ${bestSplit.mToken}/${bestSplit.vault}`);
 			} else {
-				console.log(`✅ Current split (${currentSplit.mToken}/${currentSplit.vault}) already matches best split`);
+				// Insert the position with the current split since it's already optimal
+				await insertPosition(newPosition);
+				console.log(
+					`✅ Inserted new position for strategy ${strategyAddress} (current split ${currentSplit.mToken}/${currentSplit.vault} is already optimal)`
+				);
 			}
 		}
 		// If the position exists, check if the APY has improved by at least 1%
@@ -192,59 +197,63 @@ export async function processStrategyOptimization(
 			);
 			console.log(`ℹ️ Best APY: ${apyData.bestAPY}%`);
 
+			// Determine the best split based on the new APY data
+			const bestSplit = determineBestSplit(apyData.marketAPY, apyData.vaultAPY);
+
+			// Check if the current split already matches the best split
+			const currentSplitMatchesBest =
+				existingPosition.split_mtoken === bestSplit.mToken && existingPosition.split_vault === bestSplit.vault;
+
 			// Check if the new APY is at least 1% better than the stored APY
 			const apyImprovement = apyData.bestAPY - existingPosition.apy;
 			const minImprovementThreshold = 1.0; // 1% improvement threshold
+			const apyImproved = apyImprovement >= minImprovementThreshold;
 
-			if (apyImprovement >= minImprovementThreshold) {
+			console.log(`ℹ️ APY comparison: Current ${existingPosition.apy}% vs New ${apyData.bestAPY}%`);
+			console.log(`ℹ️ APY improvement: ${apyImprovement.toFixed(2)}% (threshold: ${minImprovementThreshold}%)`);
+			console.log(`ℹ️ Current split: ${existingPosition.split_mtoken}/${existingPosition.split_vault}`);
+			console.log(`ℹ️ Best split: ${bestSplit.mToken}/${bestSplit.vault}`);
+			console.log(`ℹ️ Current split matches best: ${currentSplitMatchesBest ? 'Yes' : 'No'}`);
+
+			// Update the database with the new APY regardless
+			const updatedPosition: Position = {
+				...existingPosition,
+				apy: apyData.bestAPY,
+				last_updated: new Date(),
+			};
+
+			// Only update the position if:
+			// 1. The APY has improved significantly AND
+			// 2. The current split doesn't match the best split
+			if (apyImproved && !currentSplitMatchesBest) {
+				console.log(`✅ APY improved by ${apyImprovement.toFixed(2)}% and current split needs to be updated`);
+
+				// Update the position in the contract
+				await updateStrategyPosition(rpcUrl, privateKey, strategyAddress, bestSplit.mToken, bestSplit.vault);
+
+				// Update the split in the database
+				updatedPosition.split_mtoken = bestSplit.mToken;
+				updatedPosition.split_vault = bestSplit.vault;
+
+				await updatePosition(updatedPosition);
 				console.log(
-					`✅ New APY (${apyData.bestAPY}%) is better than stored APY (${existingPosition.apy}%) by ${apyImprovement.toFixed(2)}%`
+					`✅ Updated position for strategy ${strategyAddress} to ${bestSplit.mToken}/${bestSplit.vault} with APY ${apyData.bestAPY}%`
 				);
+			} else {
+				// Just update the APY in the database
+				await updatePosition(updatedPosition);
 
-				// Determine the best split based on the new APY data
-				const bestSplit = determineBestSplit(apyData.marketAPY, apyData.vaultAPY);
-
-				// Check if the current split already matches the best split
-				if (existingPosition.split_mtoken === bestSplit.mToken && existingPosition.split_vault === bestSplit.vault) {
-					console.log(`ℹ️ Current split (${existingPosition.split_mtoken}/${existingPosition.split_vault}) already matches best split`);
-
-					// Update only the APY in the database
-					const updatedPosition: Position = {
-						...existingPosition,
-						apy: apyData.bestAPY,
-						last_updated: new Date(),
-					};
-
-					await updatePosition(updatedPosition);
-					console.log(`✅ Updated APY for strategy ${strategyAddress} to ${apyData.bestAPY}%`);
-				} else {
+				if (!apyImproved) {
 					console.log(
-						`ℹ️ Current split (${existingPosition.split_mtoken}/${existingPosition.split_vault}) doesn't match best split (${bestSplit.mToken}/${bestSplit.vault})`
+						`ℹ️ APY improvement (${apyImprovement.toFixed(2)}%) is below threshold (${minImprovementThreshold}%), skipping position update`
 					);
-
-					// Update the position in the contract
-					await updateStrategyPosition(rpcUrl, privateKey, strategyAddress, bestSplit.mToken, bestSplit.vault);
-
-					// Update the position in the database
-					const updatedPosition: Position = {
-						...existingPosition,
-						split_mtoken: bestSplit.mToken,
-						split_vault: bestSplit.vault,
-						apy: apyData.bestAPY,
-						last_updated: new Date(),
-					};
-
-					await updatePosition(updatedPosition);
+				} else if (currentSplitMatchesBest) {
 					console.log(
-						`✅ Updated position for strategy ${strategyAddress} to ${bestSplit.mToken}/${bestSplit.vault} with APY ${apyData.bestAPY}%`
+						`ℹ️ Current split (${existingPosition.split_mtoken}/${existingPosition.split_vault}) already matches best split, skipping position update`
 					);
 				}
-			} else {
-				console.log(
-					`ℹ️ New APY (${apyData.bestAPY}%) is not significantly better than stored APY (${
-						existingPosition.apy
-					}%), improvement: ${apyImprovement.toFixed(2)}%`
-				);
+
+				console.log(`✅ Updated APY for strategy ${strategyAddress} to ${apyData.bestAPY}%`);
 			}
 		}
 	} catch (error) {
