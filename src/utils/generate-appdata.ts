@@ -1,5 +1,5 @@
 import { MetadataApi } from '@cowprotocol/app-data';
-import { generateAppDataFromDoc } from '@cowprotocol/cow-sdk';
+import { AppDataInfo, generateAppDataFromDoc } from '@cowprotocol/cow-sdk';
 import { FEE_RECIPIENT } from '../constants';
 
 export const metadataApi = new MetadataApi();
@@ -13,7 +13,12 @@ export const metadataApi = new MetadataApi();
  * @param from The address from which the transfer is made
  * @returns The generated appData document
  */
-export async function generateMamoAppData(sellToken: string, feeAmount: string, hookGasLimit: number, from: string): Promise<string> {
+export async function generateMamoAppData(
+	sellToken: string,
+	feeAmount: string,
+	hookGasLimit: number,
+	from: string
+): Promise<Pick<AppDataInfo, 'fullAppData' | 'appDataKeccak256'>> {
 	// Create the hooks metadata
 	const hooks = {
 		pre: [
@@ -41,7 +46,7 @@ export async function generateMamoAppData(sellToken: string, feeAmount: string, 
 	const appData = await generateAppDataFromDoc(appDataDoc);
 	console.log('Generated appData:', appData);
 
-	return appData.appDataKeccak256;
+	return appData;
 }
 
 /**
