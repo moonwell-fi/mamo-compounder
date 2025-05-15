@@ -162,7 +162,62 @@ async function processRewards(): Promise<void> {
 	}
 }
 
-// Import the processStrategies function from the new file
+/**
+ * Function to compare APYs between Moonwell USDC market and vault
+ */
+async function compareAPYs(): Promise<void> {
+	console.log('==========================================================');
+	console.log('🔍 MOONWELL APY COMPARISON STARTED 🔍');
+	console.log(`⏰ Start time: ${new Date().toISOString()}`);
+	console.log('==========================================================');
+
+	try {
+		// Fetch data from Moonwell API
+		const response = await fetch('https://yield-backend.moonwell.workers.dev/');
+
+		if (!response.ok) {
+			throw new Error(`Failed to fetch Moonwell data: ${response.status} ${response.statusText}`);
+		}
+
+		const data = await response.json();
+
+		// Extract USDC opportunities
+		const marketData = data.markets?.MOONWELL_USDC;
+		const vaultData = data.vaults?.mwUSDC;
+
+		if (!marketData || !vaultData) {
+			throw new Error('Could not find USDC market or vault data');
+		}
+
+		// Extract APYs
+		const marketAPY = marketData.totalSupplyApr;
+		const vaultAPY = vaultData.totalApy;
+
+		if (marketAPY === undefined || vaultAPY === undefined) {
+			throw new Error('APY data is missing');
+		}
+
+		console.log(`MOONWELL_USDC Market APY: ${marketAPY}%`);
+		console.log(`mwUSDC Vault APY: ${vaultAPY}%`);
+
+		// Compare APYs
+		if (marketAPY > vaultAPY) {
+			console.log(`✅ RESULT: MOONWELL_USDC market has better APY: ${marketAPY}% vs ${vaultAPY}%`);
+		} else if (vaultAPY > marketAPY) {
+			console.log(`✅ RESULT: mwUSDC vault has better APY: ${vaultAPY}% vs ${marketAPY}%`);
+		} else {
+			console.log(`✅ RESULT: Both have the same APY: ${marketAPY}%`);
+		}
+
+		console.log('==========================================================');
+		console.log('✅ APY COMPARISON COMPLETED SUCCESSFULLY ✅');
+		console.log('==========================================================');
+	} catch (error) {
+		console.error('❌ ERROR IN APY COMPARISON:', error);
+		console.error('==========================================================');
+		// Don't exit the process, just log the error and continue
+	}
+}
 
 // Set up health check endpoint
 app.get('/health', (req, res) => {
@@ -195,6 +250,13 @@ periodic({
 	interval: 1000 * 60 * 5, // 5 minutes
 	fn: processRewards,
 	prefix: '[MAMO Compounder]',
+});
+
+// Register the APY comparison task
+periodic({
+	interval: 1000 * 60 * 5, // 5 minutes
+	fn: compareAPYs,
+	prefix: '[Moonwell APY Compare]',
 });
 
 // Start the task scheduler
