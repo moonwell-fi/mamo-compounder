@@ -429,7 +429,7 @@ async function processStrategies(strategies: Strategy[], rpcUrl: string, private
 				args: [strategyAddress],
 			})) as Rewards[];
 
-			if (strategyAddress == '0xfa4dde5a9e1d3d0405ed31cd3d19fbe7fa12f4da') {
+			if (strategyAddress == '0x6a455900c2c3cfff11f195df388e08ac9eae1744') {
 				rewards = [
 					{
 						rewardToken: WELL,
