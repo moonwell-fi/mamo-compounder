@@ -20,20 +20,15 @@ interface ExecutionContext {
 	waitUntil: (promise: Promise<any>) => void;
 }
 
-interface Worker {
-	fetch: (request: Request, env: Env, ctx: ExecutionContext) => Promise<Response>;
-	scheduled: (controller: ScheduledController, env: Env, ctx: ExecutionContext) => Promise<void>;
-}
-
 // Import the worker code
-let worker: Worker;
+let worker: any;
 
 // Dynamically import ESM modules (since the worker is using ES modules)
 async function importWorker(): Promise<void> {
   try {
 		// We need to use dynamic import for ES modules
 		const workerModule = await import('./src/index.js');
-		worker = workerModule.default as Worker;
+		worker = workerModule.default;
 		console.log('Worker module loaded successfully');
 	} catch (error) {
 		console.error('Failed to import worker module:', error);
@@ -76,9 +71,12 @@ app.post('/trigger-job', async (req, res) => {
 		};
 
 		// Run the scheduled function
-		await worker.scheduled(mockController, env, ctx);
-
-		res.send('Scheduled job triggered successfully');
+		if (typeof worker.scheduled === 'function') {
+			await worker.scheduled(mockController, env, ctx);
+			res.send('Scheduled job triggered successfully');
+		} else {
+			res.status(500).send('Worker does not have a scheduled function');
+		}
 	} catch (error: any) {
 		console.error('Error triggering scheduled job:', error);
 		res.status(500).send(`Error: ${error.message}`);
@@ -115,9 +113,12 @@ nodeCron.schedule(process.env.CRON_SCHEDULE || '*/15 * * * *', async () => {
 		};
 
 		// Run the scheduled function
-		await worker.scheduled(mockController, env, ctx);
-
-		console.log('Scheduled job completed successfully');
+		if (typeof worker.scheduled === 'function') {
+			await worker.scheduled(mockController, env, ctx);
+			console.log('Scheduled job completed successfully');
+		} else {
+			console.error('Worker does not have a scheduled function');
+		}
 	} catch (error) {
 		console.error('Error in scheduled job:', error);
 	}
