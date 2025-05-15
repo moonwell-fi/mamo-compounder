@@ -14,5 +14,5 @@ COPY . .
 # Set environment variables
 ENV NODE_ENV=production
 
-# Start the cron job script
-CMD ["npx", "ts-node", "cron.ts"]
+# Start the main application
+CMD ["npx", "ts-node", "src/index.ts"]
