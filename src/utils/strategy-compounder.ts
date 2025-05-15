@@ -73,7 +73,6 @@ async function fetchStrategyRewards(client: ReturnType<typeof createPublicClient
 		args: [strategyAddress],
 	})) as Rewards[];
 
-
 	console.log(`  Found ${rewards.length} rewards for strategy ${strategyAddress}`);
 	return rewards;
 }
@@ -282,7 +281,7 @@ async function createSwapOrder(
  * @param rpcUrl The RPC URL
  * @param privateKey The private key for signing transactions
  */
-async function processStrategy(
+async function processStrategyCompounding(
 	strategy: Strategy,
 	client: ReturnType<typeof createPublicClient>,
 	baseClient: ReturnType<typeof createPublicClient>,
@@ -350,7 +349,7 @@ async function processStrategy(
  * @param privateKey The private key for signing transactions
  * @param env The environment variables
  */
-export async function processStrategies(strategies: Strategy[], rpcUrl: string, privateKey: string, env: any): Promise<void> {
+export async function compoundStrategies(strategies: Strategy[], rpcUrl: string, privateKey: string, env: any): Promise<void> {
 	console.log(`Processing ${strategies.length} strategies...`);
 
 	// Create viem client using the provided RPC URL
@@ -367,6 +366,6 @@ export async function processStrategies(strategies: Strategy[], rpcUrl: string, 
 
 	// Process each strategy
 	for (const strategy of strategies) {
-		await processStrategy(strategy, client, baseClient, minUsdValueThreshold, rpcUrl, privateKey);
+		await processStrategyCompounding(strategy, client, baseClient, minUsdValueThreshold, rpcUrl, privateKey);
 	}
 }

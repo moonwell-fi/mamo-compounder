@@ -1,10 +1,10 @@
-import { createPublicClient, http, createWalletClient, encodeAbiParameters, decodeErrorResult } from 'viem';
+import { createPublicClient, http } from 'viem';
 import { base } from 'viem/chains';
 import express from 'express';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 
-import { processStrategies } from './utils/strategy-processor';
+import { compoundStrategies } from './utils/strategy-compounder';
 import { initializeDatabase } from './utils/database';
 import { getAPYData, processStrategyOptimization } from './utils/strategy-optimizer';
 
@@ -40,12 +40,6 @@ interface PeriodicTask {
 
 // Load environment variables
 dotenv.config();
-
-// Create a public client for the Base network
-const baseClient = createPublicClient({
-	chain: base,
-	transport: http(),
-}) as any;
 
 // Create Express app
 const app = express();
@@ -148,7 +142,7 @@ async function processRewards(): Promise<void> {
 		console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
 
 		// Process strategies
-		await processStrategies(strategiesResponse.strategies, baseRpcUrl, privateKey, {
+		await compoundStrategies(strategiesResponse.strategies, baseRpcUrl, privateKey, {
 			BASE_RPC_URL: baseRpcUrl,
 			PRIVATE_KEY: privateKey,
 			MIN_USD_VALUE_THRESHOLD: minUsdValueThreshold,
