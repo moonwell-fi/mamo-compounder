@@ -5,6 +5,8 @@ import dotenv from 'dotenv';
 import crypto from 'crypto';
 
 import { processStrategies } from './utils/strategy-processor';
+import { initializeDatabase } from './utils/database';
+import { getAPYData, processStrategyOptimization } from './utils/strategy-optimizer';
 
 // Define interfaces
 interface Strategy {
@@ -163,57 +165,49 @@ async function processRewards(): Promise<void> {
 }
 
 /**
- * Function to compare APYs between Moonwell USDC market and vault
+ * Function to optimize strategy positions based on APY comparison
  */
-async function compareAPYs(): Promise<void> {
+async function optimizeStrategyPositions(): Promise<void> {
 	console.log('==========================================================');
-	console.log('🔍 MOONWELL APY COMPARISON STARTED 🔍');
+	console.log('🔍 STRATEGY POSITION OPTIMIZATION STARTED 🔍');
 	console.log(`⏰ Start time: ${new Date().toISOString()}`);
 	console.log('==========================================================');
 
 	try {
-		// Fetch data from Moonwell API
-		const response = await fetch('https://yield-backend.moonwell.workers.dev/');
+		// Get environment variables
+		const baseRpcUrl = ensureString(process.env.BASE_RPC_URL, 'BASE_RPC_URL environment variable is required');
+		const privateKey = ensureString(process.env.PRIVATE_KEY, 'PRIVATE_KEY environment variable is required');
+
+		// Create a client for blockchain interactions
+		const client = createPublicClient({
+			chain: base,
+			transport: http(baseRpcUrl),
+		}) as any;
+
+		// Get APY data from Moonwell
+		const apyData = await getAPYData();
+
+		// Fetch strategies from the indexer
+		console.log('Fetching strategies from the indexer...');
+		const response = await fetch('https://mamo-indexer.moonwell.workers.dev/strategies');
 
 		if (!response.ok) {
-			throw new Error(`Failed to fetch Moonwell data: ${response.status} ${response.statusText}`);
+			throw new Error(`Failed to fetch strategies: ${response.status} ${response.statusText}`);
 		}
 
-		const data = await response.json();
+		const strategiesResponse = (await response.json()) as StrategiesResponse;
+		console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
 
-		// Extract USDC opportunities
-		const marketData = data.markets?.MOONWELL_USDC;
-		const vaultData = data.vaults?.mwUSDC;
-
-		if (!marketData || !vaultData) {
-			throw new Error('Could not find USDC market or vault data');
-		}
-
-		// Extract APYs
-		const marketAPY = marketData.totalSupplyApr;
-		const vaultAPY = vaultData.totalApy;
-
-		if (marketAPY === undefined || vaultAPY === undefined) {
-			throw new Error('APY data is missing');
-		}
-
-		console.log(`MOONWELL_USDC Market APY: ${marketAPY}%`);
-		console.log(`mwUSDC Vault APY: ${vaultAPY}%`);
-
-		// Compare APYs
-		if (marketAPY > vaultAPY) {
-			console.log(`✅ RESULT: MOONWELL_USDC market has better APY: ${marketAPY}% vs ${vaultAPY}%`);
-		} else if (vaultAPY > marketAPY) {
-			console.log(`✅ RESULT: mwUSDC vault has better APY: ${vaultAPY}% vs ${marketAPY}%`);
-		} else {
-			console.log(`✅ RESULT: Both have the same APY: ${marketAPY}%`);
+		// Process each strategy
+		for (const strategy of strategiesResponse.strategies) {
+			await processStrategyOptimization(client, strategy, apyData, baseRpcUrl, privateKey);
 		}
 
 		console.log('==========================================================');
-		console.log('✅ APY COMPARISON COMPLETED SUCCESSFULLY ✅');
+		console.log('✅ STRATEGY POSITION OPTIMIZATION COMPLETED SUCCESSFULLY ✅');
 		console.log('==========================================================');
 	} catch (error) {
-		console.error('❌ ERROR IN APY COMPARISON:', error);
+		console.error('❌ ERROR IN STRATEGY POSITION OPTIMIZATION:', error);
 		console.error('==========================================================');
 		// Don't exit the process, just log the error and continue
 	}
@@ -252,19 +246,27 @@ periodic({
 	prefix: '[MAMO Compounder]',
 });
 
-// Register the APY comparison task
+// Register the strategy position optimization task
 periodic({
 	interval: 1000 * 60 * 5, // 5 minutes
-	fn: compareAPYs,
-	prefix: '[Moonwell APY Compare]',
+	fn: optimizeStrategyPositions,
+	prefix: '[Strategy Optimizer]',
 });
 
-// Start the task scheduler
-taskScheduler();
+// Initialize the database before starting the server
+initializeDatabase()
+	.then(() => {
+		// Start the task scheduler
+		taskScheduler();
 
-// Start the server
-app.listen(PORT, () => {
-	console.log(`Server running on port ${PORT}`);
-	console.log(`Health check: http://localhost:${PORT}/health`);
-	console.log(`Status: http://localhost:${PORT}/status`);
-});
+		// Start the server
+		app.listen(PORT, () => {
+			console.log(`Server running on port ${PORT}`);
+			console.log(`Health check: http://localhost:${PORT}/health`);
+			console.log(`Status: http://localhost:${PORT}/status`);
+		});
+	})
+	.catch((error) => {
+		console.error('❌ Failed to initialize database:', error);
+		process.exit(1);
+	});
