@@ -234,9 +234,15 @@ export async function processStrategyOptimization(
 			} else {
 				// Don't update the database if we don't update the position
 				if (!apyImproved) {
-					console.log(
-						`ℹ️ APY improvement (${apyImprovement.toFixed(2)}%) is below threshold (${minImprovementThreshold}%), skipping position update`
-					);
+					if (apyImprovement < 0) {
+						console.log(`ℹ️ New APY is lower than current APY by ${Math.abs(apyImprovement).toFixed(2)}%, skipping position update`);
+					} else {
+						console.log(
+							`ℹ️ APY improvement (${apyImprovement.toFixed(
+								2
+							)}%) is below threshold (${minImprovementThreshold}%), skipping position update`
+						);
+					}
 				} else if (currentSplitMatchesBest) {
 					console.log(
 						`ℹ️ Current split (${existingPosition.split_mtoken}/${existingPosition.split_vault}) already matches best split, skipping position update`
