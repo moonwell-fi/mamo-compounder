@@ -1,10 +1,15 @@
-import { createPublicClient, http, createWalletClient, encodeAbiParameters, decodeErrorResult } from 'viem';
+// Import sentry setup (ie. instrument.ts) before all other imports
+import '@/utils/instrument';
+
+import * as Sentry from '@sentry/node';
+import { createPublicClient, http } from 'viem';
 import { base } from 'viem/chains';
 import express from 'express';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 
 import { processStrategies } from './utils/strategy-processor';
+import { ensureString } from './utils/functions';
 
 // Define interfaces
 interface Strategy {
@@ -51,16 +56,6 @@ const PORT = process.env.PORT || 3000;
 
 // Store for periodic tasks
 const tasks: Record<string, PeriodicTask> = {};
-
-/**
- * Ensure a value is a string
- */
-function ensureString(value: any, message: string | undefined = undefined): string {
-	if (!value) {
-		throw new Error(message || 'Value is undefined');
-	}
-	return value;
-}
 
 /**
  * Register a periodic task to run at specified intervals
@@ -189,6 +184,9 @@ app.get('/status', (req, res) => {
 		serverTime: new Date().toISOString(),
 	});
 });
+
+// Sentry error handler must be registered before any other error middleware and after all controllers
+Sentry.setupExpressErrorHandler(app);
 
 // Register the rewards processing task
 periodic({
