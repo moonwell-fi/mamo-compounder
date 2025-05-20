@@ -61,6 +61,7 @@ async function updateStrategyPosition(
 	splitMToken: number,
 	splitVault: number
 ): Promise<`0x${string}`> {
+	console.log(`Updating strategy position for ${strategyAddress} with split ${splitMToken}/${splitVault}`);
 	try {
 		// Create wallet client
 		const account = privateKeyToAccount(privateKey as `0x${string}`);
@@ -167,27 +168,18 @@ export async function processStrategyOptimization(
 				apy: apyData.bestAPY, // Store the best APY
 			};
 
-			// Only update the position if the current split doesn't match the best split
-			if (!currentSplitMatchesBest) {
-				console.log(`ℹ️ Current split needs to be updated to the optimal split`);
+			console.log(`ℹ️ Current split needs to be updated to the optimal split`);
 
-				// Update the position in the contract
-				await updateStrategyPosition(rpcUrl, privateKey, strategyAddress, bestSplit.mToken, bestSplit.vault);
+			// Update the position in the contract
+			await updateStrategyPosition(rpcUrl, privateKey, strategyAddress, bestSplit.mToken, bestSplit.vault);
 
-				// Update the split in the new position record
-				newPosition.split_mtoken = bestSplit.mToken;
-				newPosition.split_vault = bestSplit.vault;
+			// Update the split in the new position record
+			newPosition.split_mtoken = bestSplit.mToken;
+			newPosition.split_vault = bestSplit.vault;
 
-				// Insert the position with the updated split
-				await insertPosition(newPosition);
-				console.log(`✅ Inserted new position for strategy ${strategyAddress} with optimal split ${bestSplit.mToken}/${bestSplit.vault}`);
-			} else {
-				// Insert the position with the current split since it's already optimal
-				await insertPosition(newPosition);
-				console.log(
-					`✅ Inserted new position for strategy ${strategyAddress} (current split ${currentSplit.mToken}/${currentSplit.vault} is already optimal)`
-				);
-			}
+			// Insert the position with the updated split
+			await insertPosition(newPosition);
+			console.log(`✅ Inserted new position for strategy ${strategyAddress} with optimal split ${bestSplit.mToken}/${bestSplit.vault}`);
 		}
 		// If the position exists, check if the APY has improved by at least 1%
 		else {

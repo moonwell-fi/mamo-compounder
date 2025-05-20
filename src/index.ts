@@ -23,13 +23,6 @@ interface StrategiesResponse {
 	nextCursor: string | null;
 }
 
-interface Rewards {
-	market: `0x${string}`;
-	rewardToken: `0x${string}`;
-	supplyRewardsAmount: bigint;
-	borrowRewardsAmount: bigint;
-}
-
 interface PeriodicTask {
 	interval: number;
 	fn: () => Promise<void>;
