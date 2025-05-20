@@ -107,15 +107,15 @@ async function updateStrategyPosition(
 function determineBestSplit(marketAPY: number, vaultAPY: number): { mToken: number; vault: number } {
 	// If market APY is better, allocate 100% to market (mToken)
 	if (marketAPY > vaultAPY) {
-		return { mToken: 100, vault: 0 };
+		return { mToken: 1000, vault: 0 };
 	}
 	// If vault APY is better, allocate 100% to vault
 	else if (vaultAPY > marketAPY) {
-		return { mToken: 0, vault: 100 };
+		return { mToken: 0, vault: 1000 };
 	}
 	// If they're equal, split 50/50
 	else {
-		return { mToken: 50, vault: 50 };
+		return { mToken: 500, vault: 500 };
 	}
 }
 
