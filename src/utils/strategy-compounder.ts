@@ -199,7 +199,7 @@ async function createSwapOrder(
 					buyAmount: quote.quote.buyAmount,
 					validTo: quote.quote.validTo,
 					appData: appData,
-					feeAmount: quote.quote.feeAmount,
+					feeAmount: '0',
 					kind: OrderKind.SELL,
 					partiallyFillable: false,
 					receiver: strategyAddress,

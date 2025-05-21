@@ -111,7 +111,7 @@ export async function encodeOrderForSignature(
 
 	console.log(`🔑 Order digest with domain separator: ${orderDigest}`);
 
-	const order = {
+	let order = {
 		sellToken: params.sellToken as `0x${string}`,
 		buyToken: params.buyToken as `0x${string}`,
 		receiver: params.receiver as `0x${string}`,
@@ -125,6 +125,8 @@ export async function encodeOrderForSignature(
 		sellTokenBalance: ERC20_BALANCE as `0x${string}`,
 		buyTokenBalance: ERC20_BALANCE as `0x${string}`,
 	};
+
+	console.log(`🔑 Order: ${JSON.stringify(order)}`);
 
 	const encodedOrder = encodeAbiParameters(
 		[
@@ -256,22 +258,3 @@ export async function getSwapQuote(strategy: string, sellToken: string, sellAmou
 	}
 }
 
-/**
- * Submit an order to CoW Swap
- * @param orderCreation The order creation parameters
- * @param encodedOrder The encoded order for signature
- * @returns The order response
- */
-export async function submitOrderToCowSwap(orderCreation: any, encodedOrder: `0x${string}`): Promise<any> {
-	try {
-		const orderResponse = await cowSwapOrderBookApi.sendOrder({
-			...orderCreation,
-			signature: encodedOrder,
-		});
-
-		return orderResponse;
-	} catch (error) {
-		console.error(`    ❌ Error submitting order to CoW Swap:`, error);
-		throw error;
-	}
-}
