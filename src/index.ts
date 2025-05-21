@@ -1,4 +1,5 @@
-import { createPublicClient, http } from 'viem';
+import { createPublicClient, createWalletClient, http } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 import express from 'express';
 import dotenv from 'dotenv';
@@ -7,6 +8,7 @@ import crypto from 'crypto';
 import { compoundStrategies } from './utils/strategy-compounder';
 import { initializeDatabase } from './utils/database';
 import { getAPYData, processStrategyOptimization } from './utils/strategy-optimizer';
+import { MAMO_INDEXER_API, STRATEGY_ABI } from './constants';
 
 // Define interfaces
 interface Strategy {
@@ -20,6 +22,11 @@ interface Strategy {
 
 interface StrategiesResponse {
 	strategies: Strategy[];
+	nextCursor: string | null;
+}
+
+interface IdleStrategiesResponse {
+	strategies: string[];
 	nextCursor: string | null;
 }
 
@@ -125,7 +132,7 @@ async function processRewards(): Promise<void> {
 		console.log('Fetching strategies from the indexer...');
 
 		// Fetch strategies from the indexer
-		const response = await fetch('https://mamo-indexer.moonwell.workers.dev/strategies');
+		const response = await fetch(`${MAMO_INDEXER_API}/strategies`);
 
 		if (!response.ok) {
 			throw new Error(`Failed to fetch strategies: ${response.status} ${response.statusText}`);
@@ -195,6 +202,100 @@ async function optimizeStrategyPositions(): Promise<void> {
 		console.log('==========================================================');
 	} catch (error) {
 		console.error('❌ ERROR IN STRATEGY POSITION OPTIMIZATION:', error);
+		console.error('==========================================================');
+		// Don't exit the process, just log the error and continue
+	}
+}
+
+/**
+ * Function to process idle strategies by calling depositIdleTokens
+ */
+async function processIdleStrategies(): Promise<void> {
+	console.log('==========================================================');
+	console.log('🔍 IDLE STRATEGIES PROCESSING STARTED 🔍');
+	console.log(`⏰ Start time: ${new Date().toISOString()}`);
+	console.log('==========================================================');
+
+	try {
+		// Get environment variables
+		const baseRpcUrl = ensureString(process.env.BASE_RPC_URL, 'BASE_RPC_URL environment variable is required');
+		const privateKey = ensureString(process.env.PRIVATE_KEY, 'PRIVATE_KEY environment variable is required');
+
+		// Create wallet client for transactions
+		const account = privateKeyToAccount(privateKey as `0x${string}`);
+		const walletClient = createWalletClient({
+			chain: base,
+			transport: http(baseRpcUrl),
+			account,
+		}) as any;
+
+		// Create public client for reading from the blockchain
+		const publicClient = createPublicClient({
+			chain: base,
+			transport: http(baseRpcUrl),
+		}) as any;
+
+		// Initialize variables for pagination
+		let nextCursor: string | null = null;
+		let totalProcessedStrategies = 0;
+
+		// Process all pages of idle strategies
+		do {
+			// Construct the API URL with cursor if available
+			const apiUrl = nextCursor ? `${MAMO_INDEXER_API}/strategies/idle?cursor=${nextCursor}` : `${MAMO_INDEXER_API}/strategies/idle`;
+
+			console.log(`Fetching idle strategies from: ${apiUrl}`);
+			const response = await fetch(apiUrl);
+
+			if (!response.ok) {
+				throw new Error(`Failed to fetch idle strategies: ${response.status} ${response.statusText}`);
+			}
+
+			const idleStrategiesResponse = (await response.json()) as IdleStrategiesResponse;
+			console.log(`✅ Successfully fetched ${idleStrategiesResponse.strategies.length} idle strategies`);
+
+			// Process each idle strategy in this page
+			for (const strategyAddress of idleStrategiesResponse.strategies) {
+				console.log(`Processing idle strategy: ${strategyAddress}`);
+
+				try {
+					// Call depositIdleTokens on the strategy contract
+					const hash = await walletClient.writeContract({
+						address: strategyAddress as `0x${string}`,
+						abi: STRATEGY_ABI,
+						functionName: 'depositIdleTokens',
+					});
+
+					// Register the idle strategies processing task
+					periodic({
+						interval: 1000 * 60 * 5, // 5 minutes
+						fn: processIdleStrategies,
+						prefix: '[Idle Strategies]',
+					});
+
+					// Wait for transaction receipt
+					const receipt = await publicClient.waitForTransactionReceipt({
+						hash,
+					});
+
+					console.log(`✅ Successfully processed idle strategy ${strategyAddress}. Transaction hash: ${hash}`);
+					totalProcessedStrategies++;
+				} catch (error) {
+					console.error(`❌ Error processing idle strategy ${strategyAddress}:`, error);
+					// Continue with the next strategy
+				}
+			}
+
+			// Update the cursor for the next page
+			nextCursor = idleStrategiesResponse.nextCursor;
+		} while (nextCursor !== null); // Continue until there are no more pages
+
+		console.log('==========================================================');
+		console.log(`✅ IDLE STRATEGIES PROCESSING COMPLETED SUCCESSFULLY ✅`);
+		console.log(`✅ Total strategies processed: ${totalProcessedStrategies}`);
+		console.log('==========================================================');
+	} catch (error) {
+		console.error('❌ ERROR IN IDLE STRATEGIES PROCESSING:', error);
 		console.error('==========================================================');
 		// Don't exit the process, just log the error and continue
 	}
