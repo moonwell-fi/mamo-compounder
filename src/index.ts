@@ -265,18 +265,10 @@ async function processIdleStrategies(): Promise<void> {
 						abi: STRATEGY_ABI,
 						functionName: 'depositIdleTokens',
 					});
-
-					// Register the idle strategies processing task
-					periodic({
-						interval: 1000 * 60 * 5, // 5 minutes
-						fn: processIdleStrategies,
-						prefix: '[Idle Strategies]',
-					});
-
 					// Wait for transaction receipt
-					const receipt = await publicClient.waitForTransactionReceipt({
-						hash,
-					});
+					await publicClient.waitForTransactionReceipt({
+							hash,
+						});
 
 					console.log(`✅ Successfully processed idle strategy ${strategyAddress}. Transaction hash: ${hash}`);
 					totalProcessedStrategies++;
@@ -340,6 +332,15 @@ periodic({
 	fn: optimizeStrategyPositions,
 	prefix: '[Strategy Optimizer]',
 });
+
+// Register the idle strategies processing task
+periodic({
+	interval: 1000 * 60 * 5, // 5 minutes
+	fn: processIdleStrategies,
+	prefix: '[Idle Strategies]',
+});
+
+
 
 // Initialize the database before starting the server
 initializeDatabase()
