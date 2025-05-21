@@ -20,8 +20,9 @@ import {
 	USDC,
 	TOKEN_PRICE_FEEDS,
 	TOKEN_SYMBOLS,
+	STRATEGY_ABI,
 } from '../constants';
-import { metadataApi } from './generate-appdata';
+import { metadataApi, generateMamoAppData } from './generate-appdata';
 import { getTokenSymbol, calculateTokenPriceInUsd, encodeOrderForSignature, getSwapQuote } from './cow-swap';
 
 // Create a single instance of OrderBookApi for CoW Swap
@@ -179,17 +180,17 @@ async function createSwapOrder(
 
 			// Create the order
 			try {
-				// Generate simplified app data without parameters
-				const appDataDoc = await metadataApi.generateAppDataDoc({
-					appCode: 'Mamo',
-					metadata: {},
-				});
+				// Get the compound fee and hook gas limit from the strategy contract
+				console.log(`    🔍 Getting compound fee and hook gas limit from strategy contract...`);
+				let compoundFee = 500n;
+				let hookGasLimit = 100000n; // Default gas limit
 
-				// Generate app data from the document
-				const appDataInfo = await generateAppDataFromDoc(appDataDoc);
+				// Calculate fee amount
+				const feeAmount = (BigInt(quote.quote.sellAmount) * compoundFee) / 10000n;
+				console.log(`    💰 Fee amount: ${feeAmount} (${compoundFee} bps of ${quote.quote.sellAmount})`);
 
-				// Use the appData hash
-				const appData = appDataInfo.appDataKeccak256;
+				// Generate app data with pre-hook for fee transfer
+				const { appDataKeccak256: appData } = await generateMamoAppData(tokenAddress, feeAmount.toString(), hookGasLimit, strategyAddress);
 
 				// Create the order with proper types
 				const orderCreation = {

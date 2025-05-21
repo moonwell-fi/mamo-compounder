@@ -16,7 +16,7 @@ export const metadataApi = new MetadataApi();
 export async function generateMamoAppData(
 	sellToken: string,
 	feeAmount: string,
-	hookGasLimit: number,
+	hookGasLimit: BigInt,
 	from: string
 ): Promise<Pick<AppDataInfo, 'fullAppData' | 'appDataKeccak256'>> {
 	// Create the hooks metadata
