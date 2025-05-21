@@ -199,24 +199,11 @@ export async function encodeOrderForSignature(
 			return { encodedOrder, isValid: false };
 		}
 
-		// Try to decode the error if it has data
-		if (error.cause?.data) {
-			try {
-				const decodedError = decodeErrorResult({
-					abi: STRATEGY_ABI as any,
-					data: error.cause.data,
-				});
-				console.error(`📝 Decoded error:`, decodedError);
-			} catch (decodeError) {
-				console.error(`❌ Could not decode error:`, decodeError);
-			}
-		}
-
-		console.error(`❌ Error calling isValidSignature:`, {
-			error: error.message,
-			cause: error.cause?.message,
-			contractAddress: strategyAddress,
-		});
+			console.error(`❌ Error calling isValidSignature:`, {
+				error: error.message,
+				cause: error.cause?.message,
+				contractAddress: strategyAddress,
+			});
 
 		return { encodedOrder, isValid: false };
 	}

@@ -174,23 +174,25 @@ async function createSwapOrder(
 	if (balanceUsdValue >= minUsdValueThreshold) {
 		console.log(`    ✅ Token balance value ($${rewardsUsdFormatted}) exceeds threshold ($${minUsdValueThreshold})`);
 
-		// Get a quote for swapping the reward token to USDC
 		try {
 			const quote = await getSwapQuote(strategyAddress, tokenAddress, tokenBalance, USDC);
 
-			// Create the order
 			try {
 				// Get the compound fee and hook gas limit from the strategy contract
-				console.log(`    🔍 Getting compound fee and hook gas limit from strategy contract...`);
-				let compoundFee = 500n;
-				let hookGasLimit = 100000n; // Default gas limit
+				let compoundFee = 500n; // TODO move to env
+				let hookGasLimit = 100000n; // TODO move to env
 
 				// Calculate fee amount
 				const feeAmount = (BigInt(quote.quote.sellAmount) * compoundFee) / 10000n;
 				console.log(`    💰 Fee amount: ${feeAmount} (${compoundFee} bps of ${quote.quote.sellAmount})`);
 
 				// Generate app data with pre-hook for fee transfer
-				const { appDataKeccak256: appData } = await generateMamoAppData(tokenAddress, feeAmount.toString(), hookGasLimit, strategyAddress);
+				const { fullAppData: appData, appDataKeccak256 } = await generateMamoAppData(
+					tokenAddress,
+					feeAmount.toString(),
+					hookGasLimit,
+					strategyAddress
+				);
 
 				// Create the order with proper types
 				const orderCreation = {
@@ -218,7 +220,7 @@ async function createSwapOrder(
 					sellAmount: BigInt(orderCreation.sellAmount),
 					buyAmount: BigInt(orderCreation.buyAmount),
 					validTo: orderCreation.validTo,
-					appData: appData as `0x${string}`,
+					appData: appDataKeccak256 as `0x${string}`, // use hash
 					feeAmount: orderCreation.feeAmount,
 					kind: orderCreation.kind,
 					partiallyFillable: orderCreation.partiallyFillable,
@@ -228,7 +230,7 @@ async function createSwapOrder(
 				};
 
 				// Encode the order for signature with proper type conversion
-				const { encodedOrder, isValid } = await encodeOrderForSignature(orderForHashing, strategyAddress, client, rpcUrl);
+				const { encodedOrder: signature, isValid } = await encodeOrderForSignature(orderForHashing, strategyAddress, client, rpcUrl);
 
 				if (isValid) {
 					console.log(`    ✅ Order signature is valid, submitting order to CoW Swap...`);
@@ -236,8 +238,7 @@ async function createSwapOrder(
 					// Submit the order to CoW Swap with proper type conversion
 					const orderToSubmit = {
 						...orderCreation,
-						appData: appData as `0x${string}`,
-						signature: encodedOrder,
+						signature,
 					};
 
 					const orderResponse = await cowSwapOrderBookApi.sendOrder(orderToSubmit);
