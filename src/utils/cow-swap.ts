@@ -126,7 +126,7 @@ export async function encodeOrderForSignature(
 		buyTokenBalance: ERC20_BALANCE as `0x${string}`,
 	};
 
-	console.log(`🔑 Order: ${JSON.stringify(order)}`);
+	console.log(`🔑 Order: ${JSON.stringify(order, (key, value) => (typeof value === 'bigint' ? value.toString() : value))}`);
 
 	const encodedOrder = encodeAbiParameters(
 		[
