@@ -1,10 +1,12 @@
-import { createPublicClient, http, createWalletClient, encodeAbiParameters, decodeErrorResult } from 'viem';
+import { createPublicClient, http } from 'viem';
 import { base } from 'viem/chains';
 import express from 'express';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 
-import { processStrategies } from './utils/strategy-processor';
+import { compoundStrategies } from './utils/strategy-compounder';
+import { initializeDatabase } from './utils/database';
+import { getAPYData, processStrategyOptimization } from './utils/strategy-optimizer';
 
 // Define interfaces
 interface Strategy {
@@ -21,13 +23,6 @@ interface StrategiesResponse {
 	nextCursor: string | null;
 }
 
-interface Rewards {
-	market: `0x${string}`;
-	rewardToken: `0x${string}`;
-	supplyRewardsAmount: bigint;
-	borrowRewardsAmount: bigint;
-}
-
 interface PeriodicTask {
 	interval: number;
 	fn: () => Promise<void>;
@@ -38,12 +33,6 @@ interface PeriodicTask {
 
 // Load environment variables
 dotenv.config();
-
-// Create a public client for the Base network
-const baseClient = createPublicClient({
-	chain: base,
-	transport: http(),
-}) as any;
 
 // Create Express app
 const app = express();
@@ -146,7 +135,7 @@ async function processRewards(): Promise<void> {
 		console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
 
 		// Process strategies
-		await processStrategies(strategiesResponse.strategies, baseRpcUrl, privateKey, {
+		await compoundStrategies(strategiesResponse.strategies, baseRpcUrl, privateKey, {
 			BASE_RPC_URL: baseRpcUrl,
 			PRIVATE_KEY: privateKey,
 			MIN_USD_VALUE_THRESHOLD: minUsdValueThreshold,
@@ -162,7 +151,54 @@ async function processRewards(): Promise<void> {
 	}
 }
 
-// Import the processStrategies function from the new file
+/**
+ * Function to optimize strategy positions based on APY comparison
+ */
+async function optimizeStrategyPositions(): Promise<void> {
+	console.log('==========================================================');
+	console.log('🔍 STRATEGY POSITION OPTIMIZATION STARTED 🔍');
+	console.log(`⏰ Start time: ${new Date().toISOString()}`);
+	console.log('==========================================================');
+
+	try {
+		// Get environment variables
+		const baseRpcUrl = ensureString(process.env.BASE_RPC_URL, 'BASE_RPC_URL environment variable is required');
+		const privateKey = ensureString(process.env.PRIVATE_KEY, 'PRIVATE_KEY environment variable is required');
+
+		// Create a client for blockchain interactions
+		const client = createPublicClient({
+			chain: base,
+			transport: http(baseRpcUrl),
+		}) as any;
+
+		// Get APY data from Moonwell
+		const apyData = await getAPYData();
+
+		// Fetch strategies from the indexer
+		console.log('Fetching strategies from the indexer...');
+		const response = await fetch('https://mamo-indexer.moonwell.workers.dev/strategies');
+
+		if (!response.ok) {
+			throw new Error(`Failed to fetch strategies: ${response.status} ${response.statusText}`);
+		}
+
+		const strategiesResponse = (await response.json()) as StrategiesResponse;
+		console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
+
+		// Process each strategy
+		for (const strategy of strategiesResponse.strategies) {
+			await processStrategyOptimization(client, strategy, apyData, baseRpcUrl, privateKey);
+		}
+
+		console.log('==========================================================');
+		console.log('✅ STRATEGY POSITION OPTIMIZATION COMPLETED SUCCESSFULLY ✅');
+		console.log('==========================================================');
+	} catch (error) {
+		console.error('❌ ERROR IN STRATEGY POSITION OPTIMIZATION:', error);
+		console.error('==========================================================');
+		// Don't exit the process, just log the error and continue
+	}
+}
 
 // Set up health check endpoint
 app.get('/health', (req, res) => {
@@ -197,12 +233,27 @@ periodic({
 	prefix: '[MAMO Compounder]',
 });
 
-// Start the task scheduler
-taskScheduler();
-
-// Start the server
-app.listen(PORT, () => {
-	console.log(`Server running on port ${PORT}`);
-	console.log(`Health check: http://localhost:${PORT}/health`);
-	console.log(`Status: http://localhost:${PORT}/status`);
+// Register the strategy position optimization task
+periodic({
+	interval: 1000 * 60 * 5, // 5 minutes
+	fn: optimizeStrategyPositions,
+	prefix: '[Strategy Optimizer]',
 });
+
+// Initialize the database before starting the server
+initializeDatabase()
+	.then(() => {
+		// Start the task scheduler
+		taskScheduler();
+
+		// Start the server
+		app.listen(PORT, () => {
+			console.log(`Server running on port ${PORT}`);
+			console.log(`Health check: http://localhost:${PORT}/health`);
+			console.log(`Status: http://localhost:${PORT}/status`);
+		});
+	})
+	.catch((error) => {
+		console.error('❌ Failed to initialize database:', error);
+		process.exit(1);
+	});
