@@ -218,8 +218,8 @@ async function createSwapOrder(
 					sellAmount: BigInt(orderCreation.sellAmount),
 					buyAmount: BigInt(orderCreation.buyAmount),
 					validTo: orderCreation.validTo,
-					appData: orderCreation.appData,
-					feeAmount: BigInt(orderCreation.feeAmount),
+					appData: appData as `0x${string}`,
+					feeAmount: orderCreation.feeAmount,
 					kind: orderCreation.kind,
 					partiallyFillable: orderCreation.partiallyFillable,
 					receiver: orderCreation.receiver,
@@ -228,12 +228,7 @@ async function createSwapOrder(
 				};
 
 				// Encode the order for signature with proper type conversion
-				const orderWithStringAppData = {
-					...orderForHashing,
-					appData: appData as `0x${string}`,
-				};
-
-				const { encodedOrder, isValid } = await encodeOrderForSignature(orderWithStringAppData, strategyAddress, client, rpcUrl);
+				const { encodedOrder, isValid } = await encodeOrderForSignature(orderForHashing, strategyAddress, client, rpcUrl);
 
 				if (isValid) {
 					console.log(`    ✅ Order signature is valid, submitting order to CoW Swap...`);
