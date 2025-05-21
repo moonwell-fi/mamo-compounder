@@ -128,11 +128,6 @@ export async function encodeOrderForSignature(
 
 	console.log(`🔑 Order: ${JSON.stringify(order)}`);
 
-	order = {
-		...order,
-		feeAmount: BigInt(0),
-	};
-
 	const encodedOrder = encodeAbiParameters(
 		[
 			{
