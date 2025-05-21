@@ -1,7 +1,7 @@
 import { createPublicClient, http, createWalletClient } from 'viem';
 import { base } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
-import { STRATEGY_ABI } from '../constants';
+import { STRATEGY_ABI, MAMO_INDEXER_API } from '../constants';
 import { getPosition, insertPosition, updatePosition, Position } from './database';
 
 // Interface for APY data
@@ -120,6 +120,37 @@ function determineBestSplit(marketAPY: number, vaultAPY: number): { mToken: numb
 }
 
 /**
+ * Fetches the USDC balance of a strategy from the indexer API
+ * @param strategyAddress The address of the strategy
+ * @returns The USDC balance of the strategy
+ */
+async function getStrategyUSDCBalance(strategyAddress: `0x${string}`): Promise<number> {
+	try {
+		console.log(`🔍 Fetching USDC balance for strategy ${strategyAddress}...`);
+
+		const response = await fetch(`${MAMO_INDEXER_API}/strategy/${strategyAddress}/balance`);
+
+		if (!response.ok) {
+			throw new Error(`Failed to fetch strategy balance: ${response.status} ${response.statusText}`);
+		}
+
+		const data = await response.json();
+
+		// Find the USDC token in the balance array
+		const usdcBalance = data.balance.find((token: any) => token.symbol === 'USDC');
+
+		// Return the balance as a number, or 0 if not found
+		const balance = usdcBalance ? parseFloat(usdcBalance.balance) : 0;
+		console.log(`✅ USDC balance for strategy ${strategyAddress}: ${balance}`);
+		return balance;
+	} catch (error) {
+		console.error(`❌ Error fetching USDC balance for strategy ${strategyAddress}:`, error);
+		// If the balance check fails, we'll return 0 to skip the position update
+		return 0;
+	}
+}
+
+/**
  * Process a strategy by checking APYs and updating position if needed
  * @param client The viem public client
  * @param strategy The strategy to process
@@ -170,16 +201,27 @@ export async function processStrategyOptimization(
 
 			console.log(`ℹ️ Current split needs to be updated to the optimal split`);
 
-			// Update the position in the contract
-			await updateStrategyPosition(rpcUrl, privateKey, strategyAddress, bestSplit.mToken, bestSplit.vault);
+			// Check if the strategy has any USDC balance before updating position
+			const usdcBalance = await getStrategyUSDCBalance(strategyAddress);
 
-			// Update the split in the new position record
-			newPosition.split_mtoken = bestSplit.mToken;
-			newPosition.split_vault = bestSplit.vault;
+			if (usdcBalance > 0) {
+				console.log(`ℹ️ Strategy has USDC balance (${usdcBalance}), proceeding with position update`);
+
+				// Update the position in the contract
+				await updateStrategyPosition(rpcUrl, privateKey, strategyAddress, bestSplit.mToken, bestSplit.vault);
+
+				// Update the split in the new position record
+				newPosition.split_mtoken = bestSplit.mToken;
+				newPosition.split_vault = bestSplit.vault;
+			} else {
+				console.log(`ℹ️ Skipping position update for strategy ${strategyAddress} due to zero USDC balance`);
+			}
 
 			// Insert the position with the updated split
 			await insertPosition(newPosition);
-			console.log(`✅ Inserted new position for strategy ${strategyAddress} with optimal split ${bestSplit.mToken}/${bestSplit.vault}`);
+			console.log(
+				`✅ Inserted new position for strategy ${strategyAddress} with split ${newPosition.split_mtoken}/${newPosition.split_vault}`
+			);
 		}
 		// If the position exists, check if the APY has improved by at least 1%
 		else {
@@ -220,17 +262,24 @@ export async function processStrategyOptimization(
 			if (apyImproved && !currentSplitMatchesBest) {
 				console.log(`✅ APY improved by ${apyImprovement.toFixed(2)}% and current split needs to be updated`);
 
-				// Update the position in the contract
-				await updateStrategyPosition(rpcUrl, privateKey, strategyAddress, bestSplit.mToken, bestSplit.vault);
+				// Check if the strategy has any USDC balance before updating position
+				const usdcBalance = await getStrategyUSDCBalance(strategyAddress);
 
-				// Update the split in the database
-				updatedPosition.split_mtoken = bestSplit.mToken;
-				updatedPosition.split_vault = bestSplit.vault;
+				if (usdcBalance > 0) {
+					console.log(`ℹ️ Strategy has USDC balance (${usdcBalance}), proceeding with position update`);
+
+					// Update the position in the contract
+					await updateStrategyPosition(rpcUrl, privateKey, strategyAddress, bestSplit.mToken, bestSplit.vault);
+
+					// Update the split in the database
+					updatedPosition.split_mtoken = bestSplit.mToken;
+					updatedPosition.split_vault = bestSplit.vault;
+				} else {
+					console.log(`ℹ️ Skipping position update for strategy ${strategyAddress} due to zero USDC balance`);
+				}
 
 				await updatePosition(updatedPosition);
-				console.log(
-					`✅ Updated position for strategy ${strategyAddress} to ${bestSplit.mToken}/${bestSplit.vault} with APY ${apyData.bestAPY}%`
-				);
+				console.log(`✅ Updated position for strategy ${strategyAddress} with APY ${apyData.bestAPY}%`);
 			} else {
 				// Don't update the database if we don't update the position
 				if (!apyImproved) {

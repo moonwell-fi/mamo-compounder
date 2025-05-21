@@ -73,3 +73,6 @@ export const ERC20_BALANCE = '0x5a28e9363bb942b639270062aa6bb295f434bcdfc42c9726
 export const KIND_SELL = '0xf3b277728b3fee749481eb3e0b3b48980dbbab78658fc419025cb16eee346775';
 export const MAGIC_VALUE = '0x1626ba7e';
 export const STRATEGY_ABI = ERC20MoonwellMorphoStrategyABI;
+
+// API endpoints
+export const MAMO_INDEXER_API = 'https://mamo-indexer.moonwell.workers.dev';
