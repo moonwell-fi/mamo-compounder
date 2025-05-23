@@ -226,10 +226,16 @@ export async function processStrategyOptimization(
 		// If the position exists, check if the APY has improved by at least 1%
 		else {
 			console.log(`ℹ️ Strategy ${strategyAddress} found in database`);
+			// Determine the source of current APY based on split values
+			const currentApySource = existingPosition.split_mtoken > existingPosition.split_vault ? 'MARKET' : 'VAULT';
+
 			console.log(
-				`ℹ️ Current split: ${existingPosition.split_mtoken}/${existingPosition.split_vault}, Current APY: ${existingPosition.apy}%`
+				`ℹ️ Current split: ${existingPosition.split_mtoken}/${existingPosition.split_vault}, Current APY: ${existingPosition.apy}% (${currentApySource})`
 			);
-			console.log(`ℹ️ Best APY: ${apyData.bestAPY}%`);
+
+			// Determine the source of best APY
+			const bestApySource = apyData.bestSplit.mToken > apyData.bestSplit.vault ? 'MARKET' : 'VAULT';
+			console.log(`ℹ️ Best APY: ${apyData.bestAPY}% (${bestApySource})`);
 
 			// Determine the best split based on the new APY data
 			const bestSplit = determineBestSplit(apyData.marketAPY, apyData.vaultAPY);
@@ -243,7 +249,9 @@ export async function processStrategyOptimization(
 			const minImprovementThreshold = 1.0; // 1% improvement threshold
 			const apyImproved = apyImprovement >= minImprovementThreshold;
 
-			console.log(`ℹ️ APY comparison: Current ${existingPosition.apy}% vs New ${apyData.bestAPY}%`);
+			console.log(
+				`ℹ️ APY comparison: Current ${existingPosition.apy}% (${currentApySource}) vs New ${apyData.bestAPY}% (${bestApySource})`
+			);
 			console.log(`ℹ️ APY improvement: ${apyImprovement.toFixed(2)}% (threshold: ${minImprovementThreshold}%)`);
 			console.log(`ℹ️ Current split: ${existingPosition.split_mtoken}/${existingPosition.split_vault}`);
 			console.log(`ℹ️ Best split: ${bestSplit.mToken}/${bestSplit.vault}`);
@@ -260,7 +268,12 @@ export async function processStrategyOptimization(
 			// 1. The APY has improved significantly AND
 			// 2. The current split doesn't match the best split
 			if (apyImproved && !currentSplitMatchesBest) {
+				// Determine the source of APYs
+				const currentApySource = existingPosition.split_mtoken > existingPosition.split_vault ? 'MARKET' : 'VAULT';
+				const bestApySource = apyData.bestSplit.mToken > apyData.bestSplit.vault ? 'MARKET' : 'VAULT';
+
 				console.log(`✅ APY improved by ${apyImprovement.toFixed(2)}% and current split needs to be updated`);
+				console.log(`✅ Changing from ${existingPosition.apy}% (${currentApySource}) to ${apyData.bestAPY}% (${bestApySource})`);
 
 				// Check if the strategy has any USDC balance before updating position
 				const usdcBalance = await getStrategyUSDCBalance(strategyAddress);
@@ -283,8 +296,13 @@ export async function processStrategyOptimization(
 			} else {
 				// Don't update the database if we don't update the position
 				if (!apyImproved) {
+					// Determine the source of APYs
+					const currentApySource = existingPosition.split_mtoken > existingPosition.split_vault ? 'MARKET' : 'VAULT';
+					const bestApySource = apyData.bestSplit.mToken > apyData.bestSplit.vault ? 'MARKET' : 'VAULT';
+
 					if (apyImprovement < 0) {
 						console.log(`ℹ️ New APY is lower than current APY by ${Math.abs(apyImprovement).toFixed(2)}%, skipping position update`);
+						console.log(`ℹ️ Current: ${existingPosition.apy}% (${currentApySource}) vs New: ${apyData.bestAPY}% (${bestApySource})`);
 					} else {
 						console.log(
 							`ℹ️ APY improvement (${apyImprovement.toFixed(
@@ -339,14 +357,16 @@ export async function getAPYData(): Promise<APYData> {
 			throw new Error('APY data is missing');
 		}
 
-		console.log(`✅ MOONWELL_USDC Market APY: ${marketAPY}%`);
-		console.log(`✅ mwUSDC Vault APY: ${vaultAPY}%`);
+		console.log(`✅ MOONWELL_USDC Market APY: ${marketAPY}% (MARKET)`);
+		console.log(`✅ mwUSDC Vault APY: ${vaultAPY}% (VAULT)`);
 
 		// Determine the best APY and split
 		const bestAPY = Math.max(marketAPY, vaultAPY);
 		const bestSplit = determineBestSplit(marketAPY, vaultAPY);
 
-		console.log(`✅ Best APY: ${bestAPY}% with split ${bestSplit.mToken}/${bestSplit.vault}`);
+		// Determine the source of best APY
+		const bestApySource = bestSplit.mToken > bestSplit.vault ? 'MARKET' : 'VAULT';
+		console.log(`✅ Best APY: ${bestAPY}% (${bestApySource}) with split ${bestSplit.mToken}/${bestSplit.vault}`);
 
 		return {
 			marketAPY,
