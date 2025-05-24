@@ -1,3 +1,7 @@
+// IMPORTANT: Make sure to import `instrument.ts` at the top of your file for Sentry error tracking
+import './instrument'
+
+import * as Sentry from "@sentry/node"
 import crypto from 'crypto'
 import dotenv from 'dotenv'
 import express from 'express'
@@ -346,6 +350,8 @@ app.get('/status', (req, res) => {
     serverTime: new Date().toISOString(),
   })
 })
+
+Sentry.setupExpressErrorHandler(app);
 
 // Register the rewards processing task
 periodic({
