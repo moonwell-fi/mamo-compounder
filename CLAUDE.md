@@ -23,11 +23,11 @@ npm run start
 ### Testing
 
 ```bash
-# Run tests (using Vitest)
-npx vitest run
+# Run tests (Cloudflare Workers environment)
+npx vitest run --config=vitest.config.mts
 
-# Run tests in watch mode
-npx vitest
+# Run tests in watch mode  
+npx vitest --config=vitest.config.mts
 ```
 
 ## Environment Variables
