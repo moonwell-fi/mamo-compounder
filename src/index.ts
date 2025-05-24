@@ -128,28 +128,41 @@ async function processRewards(): Promise<void> {
 			'MIN_USD_VALUE_THRESHOLD environment variable is required'
 		);
 
-		// Log that we're fetching strategies
-		console.log('Fetching strategies from the indexer...');
+		// Initialize variables for pagination
+		let nextCursor: string | null = null;
+		let totalProcessedStrategies = 0;
 
-		// Fetch strategies from the indexer
-		const response = await fetch(`${MAMO_INDEXER_API}/strategies`);
+		// Process all pages of strategies
+		do {
+			// Construct the API URL with cursor if available
+			const apiUrl = nextCursor ? `${MAMO_INDEXER_API}/strategies?cursor=${nextCursor}` : `${MAMO_INDEXER_API}/strategies`;
 
-		if (!response.ok) {
-			throw new Error(`Failed to fetch strategies: ${response.status} ${response.statusText}`);
-		}
+			console.log(`Fetching strategies from: ${apiUrl}`);
+			const response = await fetch(apiUrl);
 
-		const strategiesResponse = (await response.json()) as StrategiesResponse;
-		console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
+			if (!response.ok) {
+				throw new Error(`Failed to fetch strategies: ${response.status} ${response.statusText}`);
+			}
 
-		// Process strategies
-		await compoundStrategies(strategiesResponse.strategies, baseRpcUrl, privateKey, {
-			BASE_RPC_URL: baseRpcUrl,
-			PRIVATE_KEY: privateKey,
-			MIN_USD_VALUE_THRESHOLD: minUsdValueThreshold,
-		});
+			const strategiesResponse = (await response.json()) as StrategiesResponse;
+			console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
+
+			// Process strategies in this page
+			await compoundStrategies(strategiesResponse.strategies, baseRpcUrl, privateKey, {
+				BASE_RPC_URL: baseRpcUrl,
+				PRIVATE_KEY: privateKey,
+				MIN_USD_VALUE_THRESHOLD: minUsdValueThreshold,
+			});
+
+			totalProcessedStrategies += strategiesResponse.strategies.length;
+
+			// Update the cursor for the next page
+			nextCursor = strategiesResponse.nextCursor;
+		} while (nextCursor !== null); // Continue until there are no more pages
 
 		console.log('==========================================================');
 		console.log('✅ REWARDS PROCESSING COMPLETED SUCCESSFULLY ✅');
+		console.log(`✅ Total strategies processed: ${totalProcessedStrategies}`);
 		console.log('==========================================================');
 	} catch (error) {
 		console.error('❌ ERROR IN REWARDS PROCESSING:', error);
@@ -181,24 +194,39 @@ async function optimizeStrategyPositions(): Promise<void> {
 		// Get APY data from Moonwell
 		const apyData = await getAPYData();
 
-		// Fetch strategies from the indexer
-		console.log('Fetching strategies from the indexer...');
-		const response = await fetch('https://mamo-indexer.moonwell.workers.dev/strategies');
+		// Initialize variables for pagination
+		let nextCursor: string | null = null;
+		let totalProcessedStrategies = 0;
 
-		if (!response.ok) {
-			throw new Error(`Failed to fetch strategies: ${response.status} ${response.statusText}`);
-		}
+		// Process all pages of strategies
+		do {
+			// Construct the API URL with cursor if available
+			const apiUrl = nextCursor ? `${MAMO_INDEXER_API}/strategies?cursor=${nextCursor}` : `${MAMO_INDEXER_API}/strategies`;
 
-		const strategiesResponse = (await response.json()) as StrategiesResponse;
-		console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
+			console.log(`Fetching strategies from: ${apiUrl}`);
+			const response = await fetch(apiUrl);
 
-		// Process each strategy
-		for (const strategy of strategiesResponse.strategies) {
-			await processStrategyOptimization(client, strategy, apyData, baseRpcUrl, privateKey);
-		}
+			if (!response.ok) {
+				throw new Error(`Failed to fetch strategies: ${response.status} ${response.statusText}`);
+			}
+
+			const strategiesResponse = (await response.json()) as StrategiesResponse;
+			console.log(`✅ Successfully fetched ${strategiesResponse.strategies.length} strategies`);
+
+			// Process each strategy in this page
+			for (const strategy of strategiesResponse.strategies) {
+				await processStrategyOptimization(client, strategy, apyData, baseRpcUrl, privateKey);
+			}
+
+			totalProcessedStrategies += strategiesResponse.strategies.length;
+
+			// Update the cursor for the next page
+			nextCursor = strategiesResponse.nextCursor;
+		} while (nextCursor !== null); // Continue until there are no more pages
 
 		console.log('==========================================================');
 		console.log('✅ STRATEGY POSITION OPTIMIZATION COMPLETED SUCCESSFULLY ✅');
+		console.log(`✅ Total strategies processed: ${totalProcessedStrategies}`);
 		console.log('==========================================================');
 	} catch (error) {
 		console.error('❌ ERROR IN STRATEGY POSITION OPTIMIZATION:', error);
